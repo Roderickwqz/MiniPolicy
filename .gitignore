@@ -1,0 +1,6 @@
+.vscode/
+.env
+*.json
+*.sqlite
+app/artifacts
+**/__pycache__/
