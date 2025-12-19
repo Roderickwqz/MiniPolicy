@@ -216,7 +216,9 @@ def node_report(state: RunState) -> RunState:
     """
     关键：写 report.md / artifacts.json 必须走 MCP gateway
     """
-    gw = MCPGateway()
+    # gw = MCPGateway()
+    # 但是要在state["gateway"] = MCPGateway()
+    state["gateway"] = MCPGateway()
     run_id = state["run_id"]
     thread_id = state["thread_id"]
     graph_path_id = "…>Score>Report"
@@ -248,15 +250,20 @@ def node_report(state: RunState) -> RunState:
         chunk_ids=list((state.get("chunks") or {}).keys()),
     )
 
+    envelopes_path = f"app/artifacts/{run_id}/envelopes.json"
+
     req2, res2 = gw.call_tool(
         run_id=run_id,
         node_id="Report",
         step_id=step_id,
         graph_path_id=graph_path_id,
         tool_name="fs.write_json",
-        tool_args={"path": artifacts_path, "data": {"envelopes": state.get("envelopes", [])}},
+        tool_args={"path": envelopes_path, "data": {"envelopes": state.get("envelopes", [])}},
         chunk_ids=list((state.get("chunks") or {}).keys()),
     )
+
+    state["envelopes_path"] = envelopes_path
+
 
     _append_env(state, [req1, res1, req2, res2])
 
