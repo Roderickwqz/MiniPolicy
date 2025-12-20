@@ -10,6 +10,7 @@ from app.core.envelope import Envelope
 from app.mcp.registry import ToolSpec, build_registry
 from app.mcp.tools.local_fs import LocalFSTool
 from app.mcp.artifacts import append_artifact, append_audit_log
+from app.mcp.contracts import ToolResult
 
 
 def _stable_json(obj: Any) -> str:
@@ -90,9 +91,9 @@ def _validate_args(schema: Dict[str, Any], args: Dict[str, Any]) -> Tuple[bool, 
 
 
 class MCPGateway:
-    def __init__(self) -> None:
+    def __init__(self, registry: Optional[Dict[str, ToolSpec]] = None) -> None:
         self.fs = LocalFSTool()
-        self.registry: Dict[str, ToolSpec] = build_registry(self.fs)
+        self.registry: Dict[str, ToolSpec] = registry or build_registry(self.fs)
 
     def call_tool(
         self,
@@ -163,8 +164,9 @@ class MCPGateway:
 
         try:
             out = spec.handler(tool_args)
+            serialized_out = out.to_dict() if isinstance(out, ToolResult) else out
             latency_ms = (time.perf_counter() - t0) * 1000
-            output_hash = _sha256(_stable_json(out))
+            output_hash = _sha256(_stable_json(serialized_out))
 
             res = Envelope(
                 envelope_type="tool.result",
@@ -174,7 +176,7 @@ class MCPGateway:
                 ts_ms=_now_ms(),
                 graph_path_id=graph_path_id,
                 chunk_ids=chunk_ids,
-                payload={"tool": tool_name, "output": out, "output_hash": output_hash},
+                payload={"tool": tool_name, "output": serialized_out, "output_hash": output_hash},
             )
             self._audit(run_id, req, res, args_hash=args_hash, output_hash=output_hash, latency_ms=latency_ms, status="OK")
             return req, res
@@ -232,3 +234,7 @@ class MCPGateway:
             }
         )
         append_audit_log(run_dir, line)
+
+
+def build_gateway() -> MCPGateway:
+    return MCPGateway()

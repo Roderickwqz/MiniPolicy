@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import time
 import uuid
 from typing import Dict, Any, List
@@ -42,15 +43,105 @@ def node_input(state: RunState) -> RunState:
 
 def node_ingest_docs(state: RunState) -> RunState:
     """
-    Phase0：把 input 里的 text 当作 1 个 chunk，生成 chunk_id
+    PDF ingest 通过 MCP gateway，chunk_id 稳定且包含 doc_id/page/hash。
     """
     run_id = state["run_id"]
+    user_input = state.get("user_input") or {}
+    docs = user_input.get("docs") or []
+    chunking_defaults = user_input.get("chunking") or {}
     graph_path_id = "Input>IngestDocs"
-    text = (state.get("user_input") or {}).get("text", "")
 
-    chunk_id = f"chunk_{uuid.uuid4().hex[:10]}"
-    state.setdefault("chunks", {})
-    state["chunks"][chunk_id] = {"text": text, "source": "user_input"}
+    gw = MCPGateway()
+    chunk_store = state.setdefault("chunks", {})
+    chunk_ids: List[str] = []
+    ingest_records: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+
+    def _resolved_chunking(doc_cfg: Dict[str, Any]) -> Dict[str, Any]:
+        merged: Dict[str, Any] = {}
+        merged.update(chunking_defaults)
+        merged.update(doc_cfg.get("chunking") or {})
+        if doc_cfg.get("chunk_size") is not None:
+            merged["chunk_size"] = doc_cfg["chunk_size"]
+        if doc_cfg.get("overlap") is not None:
+            merged["overlap"] = doc_cfg["overlap"]
+        if doc_cfg.get("segmentation"):
+            merged["segmentation"] = doc_cfg["segmentation"]
+        return merged
+
+    for doc in docs:
+        pdf_path = doc.get("pdf_path")
+        if not pdf_path:
+            errors.append({"doc": doc, "error": "missing_pdf_path"})
+            continue
+
+        chunk_cfg = _resolved_chunking(doc)
+        tool_args: Dict[str, Any] = {"pdf_path": pdf_path}
+        if doc.get("doc_id"):
+            tool_args["doc_id"] = doc["doc_id"]
+        if chunk_cfg.get("chunk_size"):
+            tool_args["chunk_size"] = int(chunk_cfg["chunk_size"])
+        if chunk_cfg.get("overlap") is not None:
+            tool_args["overlap"] = int(chunk_cfg["overlap"])
+        if chunk_cfg.get("segmentation"):
+            tool_args["segmentation"] = str(chunk_cfg["segmentation"])
+
+        req, res = gw.call_tool(
+            run_id=run_id,
+            node_id="IngestDocs",
+            step_id=_step(),
+            graph_path_id=graph_path_id,
+            tool_name="pdf.ingest",
+            tool_args=tool_args,
+            chunk_ids=[],
+        )
+        _append_env(state, [req, res])
+
+        output = res.payload.get("output") or {}
+        if not output.get("ok"):
+            errors.append({"doc": doc, "error": output.get("error") or "ingest_failed"})
+            continue
+
+        data = output.get("data") or {}
+        doc_chunks = data.get("chunks") or []
+        for chunk in doc_chunks:
+            chunk_id = chunk.get("chunk_id")
+            if not chunk_id:
+                continue
+            chunk_store[chunk_id] = chunk
+            chunk_ids.append(chunk_id)
+
+        ingest_records.append(
+            {
+                "doc_id": data.get("doc_id") or doc.get("doc_id"),
+                "pdf_path": pdf_path,
+                "chunks": len(doc_chunks),
+                "segmentation": tool_args.get("segmentation", "deterministic"),
+            }
+        )
+
+    if not chunk_ids:
+        fallback_text = (user_input.get("text") or "").strip()
+        if fallback_text:
+            chunk_hash = hashlib.sha256(fallback_text.encode("utf-8")).hexdigest()
+            chunk_id = f"user::{chunk_hash[:12]}"
+            chunk_store[chunk_id] = {
+                "chunk_id": chunk_id,
+                "text": fallback_text,
+                "meta": {
+                    "doc_id": "user_input",
+                    "page": 1,
+                    "hash": chunk_hash,
+                    "chunk_method": "text",
+                    "source": "user_input",
+                },
+            }
+            chunk_ids.append(chunk_id)
+            ingest_records.append(
+                {"doc_id": "user_input", "pdf_path": None, "chunks": 1, "segmentation": "text"}
+            )
+
+    state["ingest_summary"] = {"records": ingest_records, "errors": errors, "chunks": len(chunk_ids)}
 
     env = Envelope(
         envelope_type="skill.result",
@@ -59,8 +150,12 @@ def node_ingest_docs(state: RunState) -> RunState:
         step_id=_step(),
         ts_ms=_now_ms(),
         graph_path_id=graph_path_id,
-        chunk_ids=[chunk_id],
-        payload={"ingested": 1, "chunk_id": chunk_id},
+        chunk_ids=chunk_ids,
+        payload={
+            "docs_ingested": len(ingest_records),
+            "chunks_total": len(chunk_ids),
+            "errors": errors,
+        },
     )
     _append_env(state, [env])
     return state
@@ -68,13 +163,36 @@ def node_ingest_docs(state: RunState) -> RunState:
 
 def node_vector_index(state: RunState) -> RunState:
     """
-    Phase0：不做真实向量库，只做 placeholder（但保留 evidence 引用）
+    将 chunks 写入向量索引（demo 内存向量库）。
     """
     run_id = state["run_id"]
     graph_path_id = "Input>IngestDocs>VectorIndex"
+    chunk_store = state.get("chunks") or {}
+    chunk_ids = list(chunk_store.keys())
 
-    chunk_ids = list((state.get("chunks") or {}).keys())
-    state["vector_index"] = {"type": "placeholder", "chunk_ids": chunk_ids}
+    gw = MCPGateway()
+    index_name = (
+        (state.get("vector_index") or {}).get("index_name")
+        or (state.get("user_input") or {}).get("index_name")
+        or f"{run_id}::default"
+    )
+
+    req, res = gw.call_tool(
+        run_id=run_id,
+        node_id="VectorIndex",
+        step_id=_step(),
+        graph_path_id=graph_path_id,
+        tool_name="vector.upsert",
+        tool_args={"index_name": index_name, "chunks": list(chunk_store.values())},
+        chunk_ids=chunk_ids,
+    )
+    _append_env(state, [req, res])
+
+    output = res.payload.get("output") or {}
+    data = output.get("data") or {}
+    upserted = data.get("upserted", 0)
+
+    state["vector_index"] = {"index_name": index_name, "chunk_ids": chunk_ids, "upserted": upserted}
 
     env = Envelope(
         envelope_type="skill.result",
@@ -84,7 +202,104 @@ def node_vector_index(state: RunState) -> RunState:
         ts_ms=_now_ms(),
         graph_path_id=graph_path_id,
         chunk_ids=chunk_ids,
-        payload={"index_type": "placeholder", "indexed_chunks": len(chunk_ids)},
+        payload={"index_name": index_name, "indexed_chunks": upserted},
+    )
+    _append_env(state, [env])
+    return state
+
+
+def node_semantic_retrieve(state: RunState) -> RunState:
+    """
+    查询向量索引并输出严格的 Skill Envelope。
+    """
+    run_id = state["run_id"]
+    graph_path_id = "Input>IngestDocs>VectorIndex>SemanticRetrieve"
+    gw = MCPGateway()
+
+    index_info = state.get("vector_index") or {}
+    index_name = index_info.get("index_name") or f"{run_id}::default"
+    chunk_ids = index_info.get("chunk_ids") or list((state.get("chunks") or {}).keys())
+
+    user_input = state.get("user_input") or {}
+    retrieval_cfg = user_input.get("retrieval") or {}
+    queries = retrieval_cfg.get("queries") or []
+    query = retrieval_cfg.get("query") or (queries[0] if queries else None)
+    if not query:
+        query = user_input.get("text") or "Summarize compliance obligations"
+    top_k = int(retrieval_cfg.get("top_k") or user_input.get("retrieval_top_k") or 3)
+
+    req, res = gw.call_tool(
+        run_id=run_id,
+        node_id="SemanticRetrieve",
+        step_id=_step(),
+        graph_path_id=graph_path_id,
+        tool_name="vector.query",
+        tool_args={"index_name": index_name, "query": query, "top_k": top_k},
+        chunk_ids=chunk_ids,
+    )
+    _append_env(state, [req, res])
+
+    output = res.payload.get("output") or {}
+    data = output.get("data") or {}
+    matches = data.get("matches") or []
+
+    items: List[Dict[str, Any]] = []
+    evidence: List[Dict[str, Any]] = []
+    scores = [m.get("score", 0.0) for m in matches]
+
+    for match in matches:
+        chunk_id = match.get("chunk_id")
+        if not chunk_id:
+            continue
+        meta = match.get("meta") or {}
+        snippet = (match.get("text") or "").strip()
+        if len(snippet) > 240:
+            snippet = snippet[:240] + "…"
+        score = round(match.get("score", 0.0), 3)
+        items.append(
+            {
+                "chunk_id": chunk_id,
+                "doc_id": meta.get("doc_id"),
+                "page": meta.get("page"),
+                "score": score,
+                "snippet": snippet,
+                "evidence_refs": {"chunk_ids": [chunk_id], "graph_path_id": graph_path_id},
+            }
+        )
+        evidence.append({"chunk_id": chunk_id, "doc_id": meta.get("doc_id"), "page": meta.get("page")})
+
+    confidence = round(sum(scores) / len(scores), 3) if scores else 0.2
+    unknowns: List[str] = []
+    if not items:
+        unknowns.append(f"No supporting chunks retrieved for query '{query}'.")
+    if output.get("error"):
+        unknowns.append(f"Tool error: {output['error'].get('message')}")
+
+    assumptions = [
+        "SemanticRetrieve uses a bag-of-words cosine similarity; treat scores as coarse signals."
+    ]
+
+    payload = {
+        "query": query,
+        "top_k": top_k,
+        "items": items,
+        "confidence": confidence,
+        "evidence": evidence,
+        "assumptions": assumptions,
+        "unknowns": unknowns,
+    }
+
+    state["retrieval"] = payload
+
+    env = Envelope(
+        envelope_type="skill.result",
+        run_id=run_id,
+        node_id="SemanticRetrieve",
+        step_id=_step(),
+        ts_ms=_now_ms(),
+        graph_path_id=graph_path_id,
+        chunk_ids=[e["chunk_id"] for e in evidence],
+        payload=payload,
     )
     _append_env(state, [env])
     return state
@@ -92,7 +307,7 @@ def node_vector_index(state: RunState) -> RunState:
 
 def node_graph_build(state: RunState) -> RunState:
     run_id = state["run_id"]
-    graph_path_id = "Input>IngestDocs>VectorIndex>GraphBuild"
+    graph_path_id = "Input>IngestDocs>VectorIndex>SemanticRetrieve>GraphBuild"
     state["graph_build"] = {"type": "placeholder", "nodes": ["ParallelSkills", "Debate", "Verify"]}
 
     env = Envelope(
@@ -111,22 +326,29 @@ def node_graph_build(state: RunState) -> RunState:
 
 def node_parallel_skills(state: RunState) -> RunState:
     """
-    Phase0：假装跑了两个 skill，输出 claims（必须可回溯 chunk_id + graph_path_id）
+    Demo：并行 skill 汇总 ingest/index/retrieve 结果。
     """
     run_id = state["run_id"]
-    graph_path_id = "…>GraphBuild>ParallelSkills"
+    graph_path_id = "Input>IngestDocs>VectorIndex>SemanticRetrieve>GraphBuild>ParallelSkills"
     chunk_ids = list((state.get("chunks") or {}).keys())
+    retrieval = state.get("retrieval") or {}
 
     claims = [
         {
-            "claim": "Input 文本已被摄取并形成 chunk。",
+            "claim": f"Ingested {len(chunk_ids)} chunks with doc/page provenance.",
             "evidence_refs": {"chunk_ids": chunk_ids, "graph_path_id": "Input>IngestDocs"},
         },
-        {
-            "claim": "当前 Phase0 使用 placeholder index（尚未接入真实向量库）。",
-            "evidence_refs": {"chunk_ids": chunk_ids, "graph_path_id": "Input>IngestDocs>VectorIndex"},
-        },
     ]
+    if retrieval.get("items"):
+        claims.append(
+            {
+                "claim": f"Semantic retrieval found {len(retrieval['items'])} candidate evidence items.",
+                "evidence_refs": {
+                    "chunk_ids": [item["chunk_id"] for item in retrieval["items"]],
+                    "graph_path_id": "Input>IngestDocs>VectorIndex>SemanticRetrieve",
+                },
+            }
+        )
 
     env = Envelope(
         envelope_type="skill.result",
@@ -136,7 +358,7 @@ def node_parallel_skills(state: RunState) -> RunState:
         ts_ms=_now_ms(),
         graph_path_id=graph_path_id,
         chunk_ids=chunk_ids,
-        payload={"skills_ran": ["skill_a", "skill_b"], "claims": claims},
+        payload={"skills_ran": ["ingest_audit", "semantic_retrieve_summary"], "claims": claims},
     )
     _append_env(state, [env])
     return state
@@ -144,7 +366,7 @@ def node_parallel_skills(state: RunState) -> RunState:
 
 def node_debate(state: RunState) -> RunState:
     run_id = state["run_id"]
-    graph_path_id = "…>ParallelSkills>Debate"
+    graph_path_id = "Input>IngestDocs>VectorIndex>SemanticRetrieve>GraphBuild>ParallelSkills>Debate"
     chunk_ids = list((state.get("chunks") or {}).keys())
 
     turn = Envelope(
@@ -166,7 +388,7 @@ def node_debate(state: RunState) -> RunState:
 
 def node_verify(state: RunState) -> RunState:
     run_id = state["run_id"]
-    graph_path_id = "…>Debate>Verify"
+    graph_path_id = "Input>IngestDocs>VectorIndex>SemanticRetrieve>GraphBuild>ParallelSkills>Debate>Verify"
     chunk_ids = list((state.get("chunks") or {}).keys())
 
     # Phase0：验证规则=所有 claim 必须含 evidence_refs
@@ -196,7 +418,10 @@ def node_verify(state: RunState) -> RunState:
 
 def node_score(state: RunState) -> RunState:
     run_id = state["run_id"]
-    graph_path_id = "…>Verify>Score"
+    graph_path_id = (
+        "Input>IngestDocs>VectorIndex>SemanticRetrieve>"
+        "GraphBuild>ParallelSkills>Debate>Verify>Score"
+    )
     score = 0.6  # Phase0：placeholder
     env = Envelope(
         envelope_type="score.result",
@@ -216,29 +441,36 @@ def node_report(state: RunState) -> RunState:
     """
     关键：写 report.md / artifacts.json 必须走 MCP gateway
     """
-    # gw = MCPGateway()
-    # 但是要在state["gateway"] = MCPGateway()
-    state["gateway"] = MCPGateway()
+    gw = MCPGateway()
     run_id = state["run_id"]
     thread_id = state["thread_id"]
-    graph_path_id = "…>Score>Report"
+    graph_path_id = (
+        "Input>IngestDocs>VectorIndex>SemanticRetrieve>"
+        "GraphBuild>ParallelSkills>Debate>Verify>Score>Report"
+    )
     step_id = _step()
 
     report_path = f"app/artifacts/{run_id}/report.md"
     artifacts_path = f"app/artifacts/{run_id}/artifacts.json"
 
     # 简单 report
-    report_md = f"""# Phase0 Report
-
-    - run_id: {run_id}
-    - thread_id: {thread_id}
-
-    ## Envelopes
-    Total: {len(state.get("envelopes", []))}
-
-    ## Notes
-    This is Phase0 skeleton. VectorIndex/Verify/Score are placeholders.
-    """
+    retrieval = state.get("retrieval") or {}
+    report_lines = [
+        "# Phase2 Report (RAG focus)",
+        "",
+        f"- run_id: {run_id}",
+        f"- thread_id: {thread_id}",
+        "",
+        "## Envelopes",
+        f"Total: {len(state.get('envelopes', []))}",
+        "",
+        "## Retrieval",
+        f"- query: {retrieval.get('query')}",
+        f"- top_k: {retrieval.get('top_k')}",
+        f"- hits: {len(retrieval.get('items', []))}",
+        f"- confidence: {retrieval.get('confidence')}",
+    ]
+    report_md = "\n".join(report_lines)
 
     req1, res1 = gw.call_tool(
         run_id=run_id,
@@ -286,7 +518,10 @@ def node_report(state: RunState) -> RunState:
 
 def node_evals(state: RunState) -> RunState:
     run_id = state["run_id"]
-    graph_path_id = "…>Report>Evals"
+    graph_path_id = (
+        "Input>IngestDocs>VectorIndex>SemanticRetrieve>"
+        "GraphBuild>ParallelSkills>Debate>Verify>Score>Report>Evals"
+    )
     env = Envelope(
         envelope_type="evals.result",
         run_id=run_id,

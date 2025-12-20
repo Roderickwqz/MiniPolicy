@@ -8,6 +8,7 @@ from app.graph.nodes import (
     node_input,
     node_ingest_docs,
     node_vector_index,
+    node_semantic_retrieve,
     node_graph_build,
     node_parallel_skills,
     node_debate,
@@ -24,6 +25,7 @@ def build_workflow():
     workflow.add_node("Input", node_input)
     workflow.add_node("IngestDocs", node_ingest_docs)
     workflow.add_node("VectorIndex", node_vector_index)
+    workflow.add_node("SemanticRetrieve", node_semantic_retrieve)
     workflow.add_node("GraphBuild", node_graph_build)
     workflow.add_node("ParallelSkills", node_parallel_skills)
     workflow.add_node("Debate", node_debate)
@@ -35,7 +37,8 @@ def build_workflow():
     workflow.add_edge(START, "Input")
     workflow.add_edge("Input", "IngestDocs")
     workflow.add_edge("IngestDocs", "VectorIndex")
-    workflow.add_edge("VectorIndex", "GraphBuild")
+    workflow.add_edge("VectorIndex", "SemanticRetrieve")
+    workflow.add_edge("SemanticRetrieve", "GraphBuild")
     workflow.add_edge("GraphBuild", "ParallelSkills")
     workflow.add_edge("ParallelSkills", "Debate")
     workflow.add_edge("Debate", "Verify")

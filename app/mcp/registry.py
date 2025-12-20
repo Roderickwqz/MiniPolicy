@@ -4,7 +4,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Dict
 
-from app.mcp.gateway import Gateway, ToolSpec
 from app.mcp.tools.local_fs import LocalFSTool
 from app.mcp.tools.pdf_ingest import pdf_ingest_tool
 from app.mcp.tools.vector_index import vector_index_tool
@@ -77,12 +76,21 @@ def build_registry(fs: LocalFSTool) -> Dict[str, ToolSpec]:
         # 先占位“接口对齐”：后面你再把 handler 指向真实实现
         "pdf.ingest": ToolSpec(
             name="pdf.ingest",
-            handler=lambda a: {"ok": True, "chunks": []},
-            schema={"required": ["pdf_path"], "properties": {"pdf_path": {"type": "string"}}},
+            handler=pdf_ingest_tool,
+            schema={
+                "required": ["pdf_path"],
+                "properties": {
+                    "pdf_path": {"type": "string"},
+                    "doc_id": {"type": "string"},
+                    "chunk_size": {"type": "integer"},
+                    "overlap": {"type": "integer"},
+                    "segmentation": {"type": "string"},
+                },
+            },
         ),
         "vector.upsert": ToolSpec(
             name="vector.upsert",
-            handler=lambda a: {"ok": True, "upserted": 0},
+            handler=vector_index_tool,
             schema={
                 "required": ["index_name", "chunks"],
                 "properties": {"index_name": {"type": "string"}, "chunks": {"type": "array"}},
@@ -90,7 +98,7 @@ def build_registry(fs: LocalFSTool) -> Dict[str, ToolSpec]:
         ),
         "vector.query": ToolSpec(
             name="vector.query",
-            handler=lambda a: {"ok": True, "matches": []},
+            handler=semantic_retrieve_tool,
             schema={
                 "required": ["index_name", "query", "top_k"],
                 "properties": {
@@ -102,7 +110,7 @@ def build_registry(fs: LocalFSTool) -> Dict[str, ToolSpec]:
         ),
         "graph.upsert": ToolSpec(
             name="graph.upsert",
-            handler=lambda a: {"ok": True, "nodes_total": 0, "edges_total": 0},
+            handler=graph_upsert_tool,
             schema={
                 "required": ["nodes", "edges"],
                 "properties": {"nodes": {"type": "array"}, "edges": {"type": "array"}},
@@ -110,15 +118,20 @@ def build_registry(fs: LocalFSTool) -> Dict[str, ToolSpec]:
         ),
         "graph.query": ToolSpec(
             name="graph.query",
-            handler=lambda a: {"ok": True, "graph_path_id": "graph_path::demo"},
+            handler=graph_query_tool,
             schema={"required": ["query"], "properties": {"query": {"type": "string"}}},
         ),
         "report.export": ToolSpec(
             name="report.export",
-            handler=lambda a: {"ok": True, "path": a.get("path")},
+            handler=report_export_tool,
             schema={
-                "required": ["path", "format", "content"],
-                "properties": {"path": {"type": "string"}, "format": {"type": "string"}, "content": {"type": "object"}},
+                "required": ["run_dir", "format", "content", "filename"],
+                "properties": {
+                    "run_dir": {"type": "string"},
+                    "format": {"type": "string"},
+                    "content": {"type": "object"},
+                    "filename": {"type": "string"},
+                },
             },
         ),
     }

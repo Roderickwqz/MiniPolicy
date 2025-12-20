@@ -9,7 +9,6 @@ from typing import Any, Dict, Optional
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from app.graph.build import build_workflow
-from app.mcp.registry import build_gateway
 
 # 把 gateway 放进 state / context，让 nodes 用 state.gateway.call_tool(...)
 # gateway = build_gateway(run_dir=run_dir)

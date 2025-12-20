@@ -13,9 +13,11 @@ class RunState(TypedDict, total=False):
     user_input: Dict[str, Any]
 
     # Evidence objects（Phase0 用最简）
-    chunks: Dict[str, Dict[str, Any]]      # chunk_id -> {text, source, ...}
-    vector_index: Dict[str, Any]           # placeholder
-    graph_build: Dict[str, Any]            # placeholder
+    chunks: Dict[str, Dict[str, Any]]      # chunk_id -> {text, meta}
+    ingest_summary: Dict[str, Any]
+    vector_index: Dict[str, Any]           # {"index_name": ..., "chunk_ids": [...]}
+    retrieval: Dict[str, Any]
+    graph_build: Dict[str, Any]            # placeholder / graph meta
 
     # Outputs（严格只追加）
     envelopes: List[Dict[str, Any]]        # 存 Envelope.dict()

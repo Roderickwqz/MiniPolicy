@@ -1,10 +1,27 @@
 # app/mcp/tools/vector_index.py
 from __future__ import annotations
-from typing import Any, Dict, List
+
+import math
+import re
+from collections import Counter
+from typing import Any, Dict, List, Tuple
+
 from app.mcp.contracts import ToolError, ToolResult
 
-# P0：用内存 dict 代替向量库
+# 简易向量索引：Bag-of-words + cosine
 _INDEX: Dict[str, Dict[str, Any]] = {}
+
+
+def _tokenize(text: str) -> List[str]:
+    return re.findall(r"[a-z0-9]+", text.lower())
+
+
+def _embed(text: str) -> Tuple[Counter, float]:
+    tokens = _tokenize(text)
+    counts = Counter(tokens)
+    norm = math.sqrt(sum(v * v for v in counts.values()))
+    return counts, norm
+
 
 def vector_index_tool(args: Dict[str, Any]) -> ToolResult:
     """
@@ -17,15 +34,21 @@ def vector_index_tool(args: Dict[str, Any]) -> ToolResult:
     index_name = args["index_name"]
     chunks: List[Dict[str, Any]] = args["chunks"]
 
-    if index_name not in _INDEX:
-        _INDEX[index_name] = {"chunks": []}
+    store = _INDEX.setdefault(index_name, {"chunks": {}, "embeddings": {}})
 
-    try:
-        _INDEX[index_name]["chunks"].extend(chunks)
-        return ToolResult(ok=True, tool_name="vector_index_tool", data={"upserted": len(chunks)})
-    except Exception as e:
-        return ToolResult(
-            ok=False,
-            tool_name="vector_index_tool",
-            error=ToolError(code="TOOL_RUNTIME_ERROR", message=str(e)),
-        )
+    upserted = 0
+    for chunk in chunks:
+        chunk_id = chunk.get("chunk_id")
+        text = chunk.get("text", "")
+        if not chunk_id or not text:
+            continue
+        embedding, norm = _embed(text)
+        store["chunks"][chunk_id] = chunk
+        store["embeddings"][chunk_id] = {"vector": embedding, "norm": norm}
+        upserted += 1
+
+    return ToolResult(
+        ok=True,
+        tool_name="vector_index_tool",
+        data={"upserted": upserted, "index_size": len(store["chunks"])},
+    )
