@@ -23,6 +23,16 @@ def append_artifact(run_dir: str, record: Dict[str, Any]) -> None:
     """
     Append a record into artifacts.json as a JSONL-like array (read-modify-write).
     This is fine for a demo; production would use sqlite or jsonl.
+    
+    The record should contain:
+    - type: "tool_call"
+    - tool_name: 工具名称
+    - args_hash: 参数哈希
+    - output_hash: 输出哈希
+    - latency_ms: 延迟时间
+    - status: 状态
+    - request: 完整的请求信封
+    - result: 完整的结果信封
     """
     ensure_run_dir(run_dir)
     path = os.path.join(run_dir, "artifacts.json")
@@ -45,6 +55,16 @@ def append_artifact(run_dir: str, record: Dict[str, Any]) -> None:
 
 
 def append_audit_log(run_dir: str, line: str) -> None:
+    """
+    Append a line to audit.log.
+    
+    The line should be a JSON string containing:
+    - tool_name: 工具名称
+    - args_hash: 参数哈希
+    - output_hash: 输出哈希
+    - latency_ms: 延迟时间
+    - status: 状态
+    """
     ensure_run_dir(run_dir)
     path = os.path.join(run_dir, "audit.log")
     with _LOCK:

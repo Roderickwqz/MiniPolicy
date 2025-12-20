@@ -9,13 +9,39 @@ from typing import Any, Dict, Optional, Tuple
 from app.core.envelope import Envelope
 from app.mcp.registry import ToolSpec, build_registry
 from app.mcp.tools.local_fs import LocalFSTool
+from app.mcp.artifacts import append_artifact, append_audit_log
 
 
 def _stable_json(obj: Any) -> str:
+    """
+    这个函数的作用是：
+
+    - 将任意 Python 对象转换为 JSON 字符串
+    - `ensure_ascii=False`：允许输出中文等非 ASCII 字符，而不是转义为 Unicode
+    - `sort_keys=True`：对字典的键进行排序，确保相同内容总是生成相同的字符串
+    - `default=str`：对于无法直接序列化的对象（如 datetime、自定义对象等），使用 `str()` 函数将其转换为字符串
+
+    __用途__：生成稳定、可重复的 JSON 字符串表示，用于后续的哈希计算。
+
+    """
     return json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
 
 
 def _sha256(s: str) -> str:
+    """
+    这个函数的作用是：
+
+    - 计算输入字符串的 SHA-256 哈希值
+    - 将字符串编码为 UTF-8 字节
+    - 使用 hashlib.sha256 计算哈希
+    - 返回十六进制格式的哈希字符串（64个字符）
+
+    __用途__：在代码中用于：
+
+    1. 计算工具参数的哈希值（`args_hash`）
+    2. 计算工具输出结果的哈希值（`output_hash`）
+    3. 用于审计日志和记录，确保数据完整性
+    """
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 
@@ -24,6 +50,18 @@ def _now_ms() -> int:
 
 
 def _validate_args(schema: Dict[str, Any], args: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    """
+    这个 `_validate_args` 函数是一&#x4E2A;__&#x53C2;数验证器__，用于在调用工具之前验证传入的参数是否符合预期的模式（schema）。
+
+    ## 主要功能
+    这个函数接收两个参数：
+    - `schema`: 定义了工具期望的参数结构和类型
+    - `args`: 实际传入的参数
+
+    返回一个元组 `(bool, Optional[str])`，其中：
+    - 第一个值表示验证是否通过（True/False）
+    - 第二个值是错误信息（如果验证失败）
+    """
     required = schema.get("required", [])
     props = schema.get("properties", {})
 
@@ -78,6 +116,7 @@ class MCPGateway:
         ts = _now_ms()
         args_hash = _sha256(_stable_json(tool_args))
 
+        # __req（请求信封）__：记录工具调用的请求信息，包括工具名称、参数、时间戳等
         req = Envelope(
             envelope_type="tool.request",
             run_id=run_id,
@@ -91,6 +130,7 @@ class MCPGateway:
 
         spec = self.registry.get(tool_name)
         if spec is None or not spec.allow:
+            # - __res（结果信封）__：记录工具执行的结果，包括输出、错误信息、状态等
             res = Envelope(
                 envelope_type="tool.result",
                 run_id=run_id,
@@ -167,8 +207,6 @@ class MCPGateway:
         status: str,
     ) -> None:
         run_dir = f"app/artifacts/{run_id}"
-        artifacts_path = f"{run_dir}/artifacts.json"
-        audit_path = f"{run_dir}/audit.log"
 
         # tool_call record 追加到 artifacts.json
         record = {
@@ -181,7 +219,7 @@ class MCPGateway:
             "request": req.model_dump() if hasattr(req, "model_dump") else req.__dict__,
             "result": res.model_dump() if hasattr(res, "model_dump") else res.__dict__,
         }
-        self.fs.append_json_record(path=artifacts_path, record=record)
+        append_artifact(run_dir, record)
 
         # audit.log 追加一行（JSON）
         line = _stable_json(
@@ -193,4 +231,4 @@ class MCPGateway:
                 "status": status,
             }
         )
-        self.fs.append_text(path=audit_path, text=line + "\n")
+        append_audit_log(run_dir, line)
