@@ -17,13 +17,13 @@ services:
       - "22007:50051"  # gRPC
     volumes:
       - ${WEAVIATE_DATA_PATH}:/var/lib/weaviate
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       # --- Proxy ---
       HTTP_PROXY: "http://host.docker.internal:12334"
       HTTPS_PROXY: "http://host.docker.internal:12334"
       NO_PROXY: "localhost,127.0.0.1,weaviate"
-      extra_hosts:
-        - "host.docker.internal:host-gateway"
 
       # --- Basic ---
       QUERY_DEFAULTS_LIMIT: "25"                        # 当查询里没有显式指定 limit 时，默认返回 25 条结果
