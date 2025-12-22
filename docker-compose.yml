@@ -20,17 +20,17 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      # --- Proxy ---
-      HTTP_PROXY: "http://host.docker.internal:12334"
-      HTTPS_PROXY: "http://host.docker.internal:12334"
-      NO_PROXY: "localhost,127.0.0.1,weaviate"
+      # # --- Proxy, NOT needed, because Docker daemon's systemd has already set the proxy---
+      # HTTP_PROXY: "http://host.docker.internal:12334"
+      # HTTPS_PROXY: "http://host.docker.internal:12334"
+      # NO_PROXY: "localhost,127.0.0.1,weaviate"
 
       # --- Basic ---
       QUERY_DEFAULTS_LIMIT: "25"                        # 当查询里没有显式指定 limit 时，默认返回 25 条结果
       AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"   # 允许不带 API key / token 的请求访问 Weaviate
       PERSISTENCE_DATA_PATH: "/var/lib/weaviate"        # Weaviate 在容器内存储数据的路径
       DEFAULT_VECTORIZER_MODULE: "text2vec-openai"      # 创建 class 时，不自动帮你选 vectorizer
-      CLUSTER_HOSTNAME: "node1"                         # 当前 Weaviate 节点的名字
+      # CLUSTER_HOSTNAME: "node1"                         # 当前 Weaviate 节点的名字
 
       # --- Modules ---
       ENABLE_API_BASED_MODULES: 'true'

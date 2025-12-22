@@ -24,10 +24,10 @@ def get_weaviate_client():
         #     url=WEAVIATE_URL,
         #     auth_client_secret=None,  # No auth (AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: true)
         # )
-        client = weaviate.connect_to_local(
+        return weaviate.connect_to_local(
             host="localhost",
-            port=8080,      # HTTP/REST
-            grpc_port=50051 # gRPC
+            port=22006,      # HTTP/REST
+            grpc_port=22007 # gRPC
         )
     except Exception:
         try:
@@ -77,24 +77,41 @@ def ensure_weaviate_class(client, class_name: str, properties: list[dict]):
     
     # Check if class exists
     try:
-        schema = client.schema.get()
-        existing_classes = [cls.get("class") for cls in schema.get("classes", [])]
-        if class_name in existing_classes:
-            return
+        if hasattr(client, "collections"):
+            # v4 API
+            try:
+                collection = client.collections.get(class_name)
+                # If we can get it, it exists
+                return
+            except Exception:
+                # Collection doesn't exist, will create it
+                pass
+        else:
+            # v3 API
+            schema = client.schema.get()
+            existing_classes = [cls.get("class") for cls in schema.get("classes", [])]
+            if class_name in existing_classes:
+                return
     except Exception:
         # If we can't check, try to create anyway
         pass
     
     # Create class with properties
-    class_schema = {
-        "class": class_name,
-        "description": f"Vector store for {class_name}",
-        "vectorizer": "text2vec-openai",  # From docker-compose config
-        "properties": properties,
-    }
-    
     try:
-        client.schema.create_class(class_schema)
+        if hasattr(client, "collections"):
+            # v4 API - WeaviateVectorStore will handle collection creation
+            # We just need to ensure it doesn't exist check fails
+            # The actual creation will be done by LlamaIndex's WeaviateVectorStore
+            pass
+        else:
+            # v3 API - create class schema
+            class_schema = {
+                "class": class_name,
+                "description": f"Vector store for {class_name}",
+                "vectorizer": "text2vec-openai",  # From docker-compose config
+                "properties": properties,
+            }
+            client.schema.create_class(class_schema)
     except Exception as e:
         # Class might have been created by another process, or error creating
         # We'll let the vector store handle it

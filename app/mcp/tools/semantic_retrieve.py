@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 
 from app.mcp.contracts import ToolError, ToolResult
 from app.mcp.tools.weaviate_client import get_weaviate_client, get_weaviate_vector_store
+from app.mcp.tools.vector_index import normalize_class_name
 
 try:
     from llama_index.core import VectorStoreIndex, QueryBundle
@@ -67,9 +68,12 @@ def semantic_retrieve_tool(args: Dict[str, Any]) -> ToolResult:
             ),
         )
 
+    client = None
+    vector_store = None
     try:
-        # Sanitize class name (same as in vector_index_tool)
-        class_name = index_name.replace("::", "_").replace("-", "_")
+        # Normalize class name to meet Weaviate requirements (must start with capital letter)
+        # Use the same normalization function as vector_index_tool to ensure consistency
+        class_name = normalize_class_name(index_name)
         
         # Get Weaviate client and check if class exists
         client = get_weaviate_client()
@@ -86,18 +90,35 @@ def semantic_retrieve_tool(args: Dict[str, Any]) -> ToolResult:
 
         # Check if class exists
         try:
-            schema = client.schema.get()
-            existing_classes = [cls.get("class") for cls in schema.get("classes", [])]
-            if class_name not in existing_classes:
-                return ToolResult(
-                    ok=False,
-                    tool_name="semantic_retrieve_tool",
-                    error=ToolError(
-                        code="NOT_FOUND",
-                        message="Index not found",
-                        details={"index_name": index_name, "class_name": class_name},
-                    ),
-                )
+            if hasattr(client, "collections"):
+                # v4 API
+                try:
+                    collection = client.collections.get(class_name)
+                    # If we can get the collection, it exists
+                except Exception:
+                    return ToolResult(
+                        ok=False,
+                        tool_name="semantic_retrieve_tool",
+                        error=ToolError(
+                            code="NOT_FOUND",
+                            message="Index not found",
+                            details={"index_name": index_name, "class_name": class_name},
+                        ),
+                    )
+            else:
+                # v3 API
+                schema = client.schema.get()
+                existing_classes = [cls.get("class") for cls in schema.get("classes", [])]
+                if class_name not in existing_classes:
+                    return ToolResult(
+                        ok=False,
+                        tool_name="semantic_retrieve_tool",
+                        error=ToolError(
+                            code="NOT_FOUND",
+                            message="Index not found",
+                            details={"index_name": index_name, "class_name": class_name},
+                        ),
+                    )
         except Exception:
             # If we can't check schema, try to proceed anyway
             pass
@@ -168,13 +189,6 @@ def semantic_retrieve_tool(args: Dict[str, Any]) -> ToolResult:
 
         # Sort by score (descending) - should already be sorted, but ensure
         matches.sort(key=lambda x: x["score"], reverse=True)
-        
-        # Close Weaviate client connection (v4 API requires explicit close)
-        try:
-            if hasattr(client, "close"):
-                client.close()
-        except Exception:
-            pass
 
         return ToolResult(
             ok=True,
@@ -192,3 +206,17 @@ def semantic_retrieve_tool(args: Dict[str, Any]) -> ToolResult:
                 details={"error_type": type(e).__name__},
             ),
         )
+    finally:
+        # Close all Weaviate client connections (v4 API requires explicit close)
+        # Close vector_store's client if it has one
+        if vector_store and hasattr(vector_store, "_client"):
+            try:
+                vector_store._client.close()
+            except Exception:
+                pass
+        # Close our client
+        if client:
+            try:
+                client.close()
+            except Exception:
+                pass

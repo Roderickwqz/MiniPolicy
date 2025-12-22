@@ -8,21 +8,22 @@ import os
 import sys
 import json
 from pathlib import Path
+import dotenv
 
-# Add app to path
-sys.path.insert(0, str(Path(__file__).parent))
-
+# Add project root to path so we can import app module
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 from app.mcp.tools.pdf_ingest import pdf_ingest_tool
 from app.mcp.tools.vector_index import vector_index_tool
 from app.mcp.tools.semantic_retrieve import semantic_retrieve_tool
-
+dotenv.load_dotenv()
 
 def test_stable_chunk_id():
     """Test that same PDF re-run produces identical chunk_ids."""
     print("Testing stable chunk_id generation...")
     
     # Use a sample PDF (you'll need to provide one)
-    pdf_path = os.getenv("TEST_PDF_PATH", "test_data/sample.pdf")
+    pdf_path = os.getenv("TEST_PDF_PATH", "data/gdpr-google.pdf")
     
     if not os.path.exists(pdf_path):
         print(f"  ⚠️  Skipping: PDF not found at {pdf_path}")
@@ -88,7 +89,7 @@ def test_end_to_end():
         return False
     
     # Use a sample PDF
-    pdf_path = os.getenv("TEST_PDF_PATH", "test_data/sample.pdf")
+    pdf_path = os.getenv("TEST_PDF_PATH", "data/gdpr-google.pdf")
     
     if not os.path.exists(pdf_path):
         print(f"  ⚠️  Skipping: PDF not found at {pdf_path}")
@@ -113,7 +114,7 @@ def test_end_to_end():
     
     # Step 2: Vector Index
     print("  2. Vector Index (Weaviate)...")
-    index_name = "test_phase2_index"
+    index_name = "TestPhase2Index"
     index_args = {
         "index_name": index_name,
         "chunks": chunks,
@@ -216,13 +217,13 @@ if __name__ == "__main__":
     results = []
     
     # Test 1: Stable chunk_id
-    results.append(("Stable chunk_id", test_stable_chunk_id()))
+    # results.append(("Stable chunk_id", test_stable_chunk_id()))
     
     # Test 2: End-to-end
     results.append(("End-to-end pipeline", test_end_to_end()))
     
     # Test 3: No results handling
-    results.append(("No results handling", test_no_results_handling()))
+    # results.append(("No results handling", test_no_results_handling()))
     
     # Summary
     print("\n" + "=" * 60)

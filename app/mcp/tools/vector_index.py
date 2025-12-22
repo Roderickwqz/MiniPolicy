@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 import weaviate
+import re
 
 from app.mcp.contracts import ToolError, ToolResult
 from app.mcp.tools.weaviate_client import get_weaviate_client, get_weaviate_vector_store, ensure_weaviate_class
@@ -12,6 +13,17 @@ try:
     from llama_index.core import Document  # 原始文档的标准载体，用来承载整篇内容 + 元数据
 except ImportError:
     Document = None
+
+
+def normalize_class_name(name: str) -> str:
+    parts = re.split(r"[^0-9a-zA-Z]+", name.strip())
+    parts = [p for p in parts if p]
+    if not parts:
+        raise ValueError("Index name is empty after normalization")
+    class_name = "".join(p[:1].upper() + p[1:] for p in parts)
+    if not class_name[0].isalpha():
+        class_name = "X" + class_name
+    return class_name
 
 
 def vector_index_tool(args: Dict[str, Any]) -> ToolResult:
@@ -62,9 +74,11 @@ def vector_index_tool(args: Dict[str, Any]) -> ToolResult:
             ),
         )
 
+    client: weaviate.Client = None
+    vector_store = None
     try:
         # Get Weaviate client and vector store
-        client: weaviate.Client = get_weaviate_client()
+        client = get_weaviate_client()
         if client is None:
             return ToolResult(
                 ok=False,
@@ -77,7 +91,8 @@ def vector_index_tool(args: Dict[str, Any]) -> ToolResult:
             )
 
         # Ensure Weaviate class exists with required properties
-        class_name = index_name.replace("::", "_").replace("-", "_")  # Sanitize class name
+        # Normalize class name to meet Weaviate requirements (must start with capital letter)
+        class_name = normalize_class_name(index_name)
         properties = [
             {"name": "chunk_id", "dataType": ["string"], "description": "Unique chunk identifier"},
             {"name": "text", "dataType": ["text"], "description": "Chunk text content"},
@@ -88,7 +103,7 @@ def vector_index_tool(args: Dict[str, Any]) -> ToolResult:
         ]
         ensure_weaviate_class(client, class_name, properties)
 
-        # Get vector store
+        # Get vector store (this creates another client internally)
         vector_store = get_weaviate_vector_store(class_name, text_key="text")
         if vector_store is None:
             return ToolResult(
@@ -136,24 +151,29 @@ def vector_index_tool(args: Dict[str, Any]) -> ToolResult:
             vector_store.add(documents)
 
         # Get index size (count documents in class)
+        # Use the client from vector_store if available, otherwise use our client
+        index_size = upserted
         try:
+            # Get the client from vector_store (it has its own client)
+            store_client = vector_store._client if hasattr(vector_store, "_client") else client
+            
             # Try v4 API first
-            if hasattr(client, "collections"):
-                collection = client.collections.get(class_name)
-                index_size = collection.aggregate.over_all(total_count=True).total_count
-            else:
+            if hasattr(store_client, "collections"):
+                try:
+                    collection = store_client.collections.get(class_name)
+                    index_size = collection.aggregate.over_all(total_count=True).total_count
+                except Exception:
+                    # Collection might not be ready yet, use upserted count
+                    index_size = upserted
+            elif hasattr(store_client, "query"):
                 # Fallback to v3 API
-                result = client.query.aggregate(class_name).with_meta_count().do()
-                index_size = result.get("data", {}).get("Aggregate", {}).get(class_name, [{}])[0].get("meta", {}).get("count", upserted)
+                try:
+                    result = store_client.query.aggregate(class_name).with_meta_count().do()
+                    index_size = result.get("data", {}).get("Aggregate", {}).get(class_name, [{}])[0].get("meta", {}).get("count", upserted)
+                except Exception:
+                    index_size = upserted
         except Exception:
             index_size = upserted
-        finally:
-            # Close Weaviate client connection (v4 API requires explicit close)
-            try:
-                if hasattr(client, "close"):
-                    client.close()
-            except Exception:
-                pass
 
         return ToolResult(
             ok=True,
@@ -171,3 +191,17 @@ def vector_index_tool(args: Dict[str, Any]) -> ToolResult:
                 details={"error_type": type(e).__name__},
             ),
         )
+    finally:
+        # Close all Weaviate client connections (v4 API requires explicit close)
+        # Close vector_store's client if it has one
+        if vector_store and hasattr(vector_store, "_client"):
+            try:
+                vector_store._client.close()
+            except Exception:
+                pass
+        # Close our client
+        if client:
+            try:
+                client.close()
+            except Exception:
+                pass
