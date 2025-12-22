@@ -23,6 +23,68 @@ def _append_env(state: RunState, envs: List[Envelope]) -> None:
     state["envelopes"].extend([e.model_dump() for e in envs])
 
 
+def _validate_skill_envelope(payload: Dict[str, Any]) -> tuple[bool, List[str]]:
+    """
+    Validate Skill Envelope output against PRD spec.
+    Returns (is_valid, list_of_errors).
+    """
+    errors: List[str] = []
+    
+    # Check required fields
+    required_fields = ["items", "confidence", "evidence", "assumptions", "unknowns"]
+    for field in required_fields:
+        if field not in payload:
+            errors.append(f"Missing required field: {field}")
+    
+    # Validate items
+    items = payload.get("items", [])
+    if not isinstance(items, list):
+        errors.append("'items' must be a list")
+    else:
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                errors.append(f"items[{idx}] must be a dict")
+            elif "chunk_id" not in item:
+                errors.append(f"items[{idx}] missing 'chunk_id'")
+    
+    # Validate confidence
+    confidence = payload.get("confidence")
+    if not isinstance(confidence, (int, float)):
+        errors.append("'confidence' must be a number")
+    elif not (0.0 <= confidence <= 1.0):
+        errors.append(f"'confidence' must be between 0.0 and 1.0, got {confidence}")
+    
+    # Validate evidence
+    evidence = payload.get("evidence", [])
+    if not isinstance(evidence, list):
+        errors.append("'evidence' must be a list")
+    else:
+        for idx, ev in enumerate(evidence):
+            if not isinstance(ev, dict):
+                errors.append(f"evidence[{idx}] must be a dict")
+            elif "chunk_id" not in ev:
+                errors.append(f"evidence[{idx}] missing 'chunk_id'")
+    
+    # Validate assumptions
+    assumptions = payload.get("assumptions", [])
+    if not isinstance(assumptions, list):
+        errors.append("'assumptions' must be a list")
+    
+    # Validate unknowns
+    unknowns = payload.get("unknowns", [])
+    if not isinstance(unknowns, list):
+        errors.append("'unknowns' must be a list")
+    
+    # Special validation: when items is empty, confidence should be low and unknowns should be non-empty
+    if len(items) == 0:
+        if confidence is not None and confidence >= 0.3:
+            errors.append("When items is empty, confidence should be < 0.3")
+        if len(unknowns) == 0:
+            errors.append("When items is empty, unknowns should be non-empty")
+    
+    return len(errors) == 0, errors
+
+
 def node_input(state: RunState) -> RunState:
     # 输入节点只负责把 user_input 固化
     run_id = state["run_id"]
@@ -268,16 +330,29 @@ def node_semantic_retrieve(state: RunState) -> RunState:
         )
         evidence.append({"chunk_id": chunk_id, "doc_id": meta.get("doc_id"), "page": meta.get("page")})
 
-    confidence = round(sum(scores) / len(scores), 3) if scores else 0.2
-    unknowns: List[str] = []
+    # Handle "no results" case: lower confidence, clear unknowns
     if not items:
-        unknowns.append(f"No supporting chunks retrieved for query '{query}'.")
+        confidence = 0.2  # Low confidence when no results
+        unknowns = [f"No supporting chunks retrieved for query '{query}'. The query may not match any indexed content."]
+        assumptions = [
+            "SemanticRetrieve uses Weaviate semantic search with OpenAI embeddings.",
+            "No results indicate the query does not match indexed content semantically.",
+        ]
+    else:
+        # Calculate confidence from scores (average, normalized)
+        avg_score = sum(scores) / len(scores) if scores else 0.0
+        # Normalize confidence: scores from Weaviate are typically 0-1, but we ensure 0.2-1.0 range
+        confidence = max(0.2, min(1.0, round(avg_score, 3)))
+        unknowns: List[str] = []
+        assumptions = [
+            "SemanticRetrieve uses Weaviate semantic search with OpenAI embeddings.",
+            "Scores represent semantic similarity; higher scores indicate better matches.",
+        ]
+    
+    # Add tool errors to unknowns
     if output.get("error"):
         unknowns.append(f"Tool error: {output['error'].get('message')}")
-
-    assumptions = [
-        "SemanticRetrieve uses a bag-of-words cosine similarity; treat scores as coarse signals."
-    ]
+        confidence = min(confidence, 0.3)  # Lower confidence on errors
 
     payload = {
         "query": query,
@@ -288,6 +363,13 @@ def node_semantic_retrieve(state: RunState) -> RunState:
         "assumptions": assumptions,
         "unknowns": unknowns,
     }
+
+    # Validate Skill Envelope schema
+    is_valid, validation_errors = _validate_skill_envelope(payload)
+    if not is_valid:
+        # Add validation errors to unknowns
+        payload["unknowns"].extend([f"Schema validation error: {err}" for err in validation_errors])
+        payload["confidence"] = min(payload["confidence"], 0.3)  # Lower confidence on validation errors
 
     state["retrieval"] = payload
 

@@ -9,11 +9,21 @@ import re
 from dataclasses import dataclass
 
 from app.mcp.contracts import ToolError, ToolResult
+from llama_index.readers.file import PyPDFReader
+from llama_index.core.node_parser import SentenceSplitter, TokenTextSplitter
+LLAMAINDEX_AVAILABLE = True
+from pypdf import PdfReader  # type: ignore
+# except ImportError:
+#     PyPDFReader = None
+#     SentenceSplitter = None
+#     TokenTextSplitter = None
+#     LLAMAINDEX_AVAILABLE = False
 
-try:
-    from pypdf import PdfReader  # type: ignore
-except Exception:  # pragma: no cover - optional dependency
-    PdfReader = None
+# Fallback to pypdf if LlamaIndex not available
+# try:
+
+# except Exception:  # pragma: no cover - optional dependency
+    # PdfReader = None
 
 
 _DEFAULT_CHUNK_SIZE = 800
@@ -91,6 +101,54 @@ class _Page:
 
 
 def _extract_pages(raw: bytes, pdf_path: str) -> List[_Page]:
+    """
+    Extract pages from PDF using LlamaIndex if available, fallback to pypdf.
+    """
+    # Try LlamaIndex first
+    if LLAMAINDEX_AVAILABLE and PyPDFReader is not None:
+        try:
+            # Save to temp file for LlamaIndex
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(raw)
+                tmp_path = tmp.name
+            
+            try:
+                loader = PyPDFReader()
+                documents = loader.load_data(file=tmp_path)
+                
+                pages: List[_Page] = []
+                current_page = 1
+                for doc in documents:
+                    # Try to extract page number from metadata
+                    page_num = doc.metadata.get("page_label") or doc.metadata.get("page_number")
+                    if page_num:
+                        try:
+                            current_page = int(page_num)
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    text = doc.get_content() or ""
+                    if text.strip():
+                        pages.append(_Page(number=current_page, text=text))
+                        current_page += 1
+                
+                # Clean up temp file
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+                
+                if pages:
+                    return pages
+            except Exception:
+                # Fallback to pypdf if LlamaIndex fails
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+    
+    # Fallback to pypdf
     if PdfReader is None:
         text = raw.decode("utf-8", errors="ignore")
         return [_Page(number=1, text=text)]
@@ -115,16 +173,48 @@ def _chunk_page(
     chunk_size: int,
     overlap: int,
     methods: List[str],
+    pdf_path: str,
 ) -> List[Dict[str, Any]]:
+    """
+    Chunk a page using either custom logic or LlamaIndex splitters.
+    Maintains stable chunk_id generation.
+    """
     chunks: List[Dict[str, Any]] = []
     page_text = page.text or ""
+    
     for method in methods:
         if method == "deterministic":
+            # Use custom deterministic chunking (maintains exact same behavior)
             iterator = _chunk_deterministic(page_text, chunk_size, overlap)
+        elif method == "semantic" and LLAMAINDEX_AVAILABLE and SentenceSplitter is not None:
+            # Use LlamaIndex SentenceSplitter for semantic chunking
+            try:
+                splitter = SentenceSplitter(
+                    chunk_size=chunk_size,
+                    chunk_overlap=overlap,
+                )
+                # Create a simple document for splitting
+                from llama_index.core import Document
+                doc = Document(text=page_text, metadata={"page": page.number})
+                nodes = splitter.get_nodes_from_documents([doc])
+                
+                # Convert nodes to our format
+                iterator = []
+                for node in nodes:
+                    chunk_text = node.get_content()
+                    # Estimate start/end positions (for compatibility)
+                    start = page_text.find(chunk_text[:50]) if chunk_text else 0
+                    end = start + len(chunk_text) if chunk_text else 0
+                    iterator.append((chunk_text, start, end))
+            except Exception:
+                # Fallback to custom semantic chunking
+                iterator = _chunk_semantic(page_text, chunk_size)
         else:
+            # Fallback to custom semantic chunking
             iterator = _chunk_semantic(page_text, chunk_size)
 
         for idx, (chunk_text, start, end) in enumerate(iterator):
+            # Maintain stable chunk_id generation (same format as before)
             chunk_hash = _sha256(f"{doc_hash}:{page.number}:{method}:{chunk_text}")
             chunk_id = f"{doc_id}::p{page.number:04d}::{method[:3]}::{chunk_hash[:10]}"
             chunks.append(
@@ -202,6 +292,7 @@ def pdf_ingest_tool(args: Dict[str, Any]) -> ToolResult:
             chunk_size=chunk_size,
             overlap=overlap,
             methods=methods,
+            pdf_path=pdf_path,
         )
         chunks.extend(page_chunks)
 

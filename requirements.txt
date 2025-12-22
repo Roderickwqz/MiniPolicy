@@ -1,0 +1,19 @@
+# Core dependencies
+pydantic>=2.0.0
+langgraph>=0.0.1
+
+# PDF processing
+pypdf>=3.0.0
+
+# LlamaIndex for RAG
+llama-index>=0.10.0
+llama-index-readers-file>=0.1.0
+llama-index-vector-stores-weaviate>=0.1.0
+# Note: Package names may vary by version. If imports fail, try:
+# llama-index-core, llama-index-readers-file, llama-index-vector-stores-weaviate
+
+# Weaviate client
+weaviate-client>=4.0.0
+
+# OpenAI for embeddings (if using OpenAI vectorizer)
+openai>=1.0.0
