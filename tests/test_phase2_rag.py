@@ -101,7 +101,7 @@ def test_end_to_end():
         "pdf_path": pdf_path,
         "chunk_size": 800,
         "overlap": 120,
-        "segmentation": "deterministic",
+        "segmentation": "both", # deterministic | semantic | both
     }
     ingest_result = pdf_ingest_tool(ingest_args)
     

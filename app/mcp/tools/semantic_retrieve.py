@@ -124,7 +124,7 @@ def semantic_retrieve_tool(args: Dict[str, Any]) -> ToolResult:
             pass
 
         # Get vector store and create index
-        vector_store = get_weaviate_vector_store(class_name, text_key="text")
+        vector_store = get_weaviate_vector_store(client, class_name, text_key="text")
         if vector_store is None:
             return ToolResult(
                 ok=False,

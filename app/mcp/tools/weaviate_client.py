@@ -37,7 +37,7 @@ def get_weaviate_client():
             return None
 
 
-def get_weaviate_vector_store(class_name: str, text_key: str = "text") -> Optional[WeaviateVectorStore]:
+def get_weaviate_vector_store(client: weaviate.Client, class_name: str, text_key: str = "text") -> Optional[WeaviateVectorStore]:
     """
     Get a LlamaIndex WeaviateVectorStore instance.
     
@@ -51,9 +51,9 @@ def get_weaviate_vector_store(class_name: str, text_key: str = "text") -> Option
     if WeaviateVectorStore is None:
         return None
     
-    client = get_weaviate_client()
-    if client is None:
-        return None
+    # client = get_weaviate_client()
+    # if client is None:
+    #     return None
     
     return WeaviateVectorStore(
         weaviate_client=client,

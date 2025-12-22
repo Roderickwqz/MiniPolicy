@@ -104,7 +104,7 @@ def vector_index_tool(args: Dict[str, Any]) -> ToolResult:
         ensure_weaviate_class(client, class_name, properties)
 
         # Get vector store (this creates another client internally)
-        vector_store = get_weaviate_vector_store(class_name, text_key="text")
+        vector_store = get_weaviate_vector_store(client, class_name, text_key="text")
         if vector_store is None:
             return ToolResult(
                 ok=False,
