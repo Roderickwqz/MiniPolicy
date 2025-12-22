@@ -16,5 +16,6 @@ llama-index-embeddings-openai>=0.1.0  # For SemanticSplitterNodeParser
 # Weaviate client
 weaviate-client>=4.0.0
 
+python-dotenv>=1.0.0
 # OpenAI for embeddings (if using OpenAI vectorizer)
 openai>=1.0.0

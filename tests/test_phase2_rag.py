@@ -131,7 +131,7 @@ def test_pdf_ingest(method='deterministic'):
         return False
     
     print(f"  ✅ Ingested {len(chunks)} chunks")
-    print(f"     Chosen segmentation: {ingest_result.data.get('chosen_segmentation', 'unknown')}")
+    print(f"     Chosen segmentation: {ingest_result.meta.get('chosen_segmentation', 'unknown')}")
     print(f"     Page count: {ingest_result.data.get('page_count', 0)}")
     return True
 
@@ -393,7 +393,7 @@ if __name__ == "__main__":
     # results.append(("Stable chunk_id", test_stable_chunk_id()))
     
     # Test 2: PDF Ingest (Step 1)
-    results.append(("PDF Ingest", test_pdf_ingest(method='deterministic')))
+    results.append(("PDF Ingest", test_pdf_ingest(method='semantic')))
     
     # Test 3: Vector Index (Step 2)
     # results.append(("Vector Index", test_vector_index()))

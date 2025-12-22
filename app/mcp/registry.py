@@ -11,6 +11,9 @@ from app.mcp.tools.semantic_retrieve import semantic_retrieve_tool
 from app.mcp.tools.graph_store import graph_upsert_tool, graph_query_tool
 from app.mcp.tools.report_export import report_export_tool
 
+# Import centralized configuration for validation
+from app.mcp.config import get_config
+
 
 @dataclass(frozen=True)
 class ToolSpec:

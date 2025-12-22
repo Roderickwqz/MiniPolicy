@@ -28,6 +28,9 @@ except ImportError:
     _OPENAI_AVAILABLE = False
     OpenAIEmbedding = None  # type: ignore[misc]
 
+# Import centralized configuration
+from app.mcp.config import get_openai_api_key
+
 
 _DEFAULT_CHUNK_SIZE = 800
 _DEFAULT_OVERLAP = 120
@@ -345,7 +348,7 @@ def _get_embed_model_with_reason() -> Tuple[Optional[Any], Optional[str]]:
     if not _OPENAI_AVAILABLE:
         return None, "openai_embedding_import_unavailable"
 
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = get_openai_api_key()
     if not api_key:
         return None, "missing_OPENAI_API_KEY"
 

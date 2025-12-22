@@ -12,6 +12,9 @@ from app.mcp.tools.local_fs import LocalFSTool
 from app.mcp.artifacts import append_artifact, append_audit_log
 from app.mcp.contracts import ToolResult
 
+# Import centralized configuration for validation
+from app.mcp.config import get_config
+
 
 def _stable_json(obj: Any) -> str:
     """

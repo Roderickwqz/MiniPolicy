@@ -1,16 +1,11 @@
 # app/mcp/tools/weaviate_client.py
 from __future__ import annotations
 
-import os
 from typing import Optional
 import weaviate
 from llama_index.vector_stores.weaviate import WeaviateVectorStore
 
-# Weaviate connection configuration
-WEAVIATE_HOST = os.getenv("WEAVIATE_HOST", "localhost")
-WEAVIATE_PORT = int(os.getenv("WEAVIATE_PORT", "22006"))
-WEAVIATE_SCHEME = os.getenv("WEAVIATE_SCHEME", "http")
-WEAVIATE_URL = f"{WEAVIATE_SCHEME}://{WEAVIATE_HOST}:{WEAVIATE_PORT}"
+from app.mcp.config import get_weaviate_client_config
 
 
 def get_weaviate_client():
@@ -19,20 +14,19 @@ def get_weaviate_client():
     Returns None if weaviate is not installed.
     """
     try:
+        # Get configuration from centralized config
+        config = get_weaviate_client_config()
+        
         # Try v4 API first (newer versions)
-        # return weaviate.Client(
-        #     url=WEAVIATE_URL,
-        #     auth_client_secret=None,  # No auth (AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: true)
-        # )
         return weaviate.connect_to_local(
-            host="localhost",
-            port=22006,      # HTTP/REST
-            grpc_port=22007 # gRPC
+            host=config["host"],
+            port=config["port"],      # HTTP/REST
+            grpc_port=config["port"] + 1  # gRPC (typically port + 1)
         )
     except Exception:
         try:
             # Fallback to v3 API
-            return weaviate.Client(WEAVIATE_URL)
+            return weaviate.Client(config["url"])
         except Exception:
             return None
 
