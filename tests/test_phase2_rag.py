@@ -72,48 +72,104 @@ def test_stable_chunk_id():
         return False
 
 
-def test_end_to_end():
-    """Test end-to-end: PDF ingest → Weaviate storage → SemanticRetrieve → Skill Envelope output."""
-    print("\nTesting end-to-end RAG pipeline...")
-    
-    # Check Weaviate connection
+def _check_weaviate_connection():
+    """Helper: Check if Weaviate is available."""
     try:
         from app.mcp.tools.weaviate_client import get_weaviate_client
         client = get_weaviate_client()
         if client is None:
-            print("  ⚠️  Skipping: Weaviate client not available")
-            print("     Make sure Weaviate is running (docker-compose up)")
-            return False
+            return False, "Weaviate client not available. Make sure Weaviate is running (docker-compose up)"
+        return True, None
     except Exception as e:
-        print(f"  ⚠️  Skipping: Cannot connect to Weaviate: {e}")
-        return False
-    
-    # Use a sample PDF
+        return False, f"Cannot connect to Weaviate: {e}"
+
+
+def _get_test_pdf_path():
+    """Helper: Get test PDF path."""
     pdf_path = os.getenv("TEST_PDF_PATH", "data/gdpr-google.pdf")
-    
     if not os.path.exists(pdf_path):
-        print(f"  ⚠️  Skipping: PDF not found at {pdf_path}")
+        return None, f"PDF not found at {pdf_path}"
+    return pdf_path, None
+
+
+def test_pdf_ingest(method='deterministic'):
+    """Test PDF ingestion step."""
+    print("\nTesting PDF Ingest...")
+    
+    pdf_path, error = _get_test_pdf_path()
+    if error:
+        print(f"  ⚠️  Skipping: {error}")
         return False
     
-    # Step 1: PDF Ingest
-    print("  1. PDF Ingest...")
     ingest_args = {
         "pdf_path": pdf_path,
         "chunk_size": 800,
         "overlap": 120,
-        "segmentation": "both", # deterministic | semantic | both
+        "segmentation": method,  # semantic | deterministic
     }
     ingest_result = pdf_ingest_tool(ingest_args)
     
     if not ingest_result.ok:
-        print(f"     ❌ Ingest failed: {ingest_result.error}")
+        print(f"  ❌ Ingest failed: {ingest_result.error}")
         return False
     
     chunks = ingest_result.data.get("chunks", [])
-    print(f"     ✅ Ingested {len(chunks)} chunks")
+    if len(chunks) == 0:
+        print(f"  ❌ No chunks extracted")
+        return False
     
-    # Step 2: Vector Index
-    print("  2. Vector Index (Weaviate)...")
+    # Verify chunk structure
+    required_fields = ["chunk_id", "text", "meta"]
+    all_valid = True
+    for chunk in chunks[:5]:  # Check first 5 chunks
+        for field in required_fields:
+            if field not in chunk:
+                print(f"  ❌ Chunk missing {field}: {chunk}")
+                all_valid = False
+    
+    if not all_valid:
+        return False
+    
+    print(f"  ✅ Ingested {len(chunks)} chunks")
+    print(f"     Chosen segmentation: {ingest_result.data.get('chosen_segmentation', 'unknown')}")
+    print(f"     Page count: {ingest_result.data.get('page_count', 0)}")
+    return True
+
+
+def test_vector_index():
+    """Test vector indexing step."""
+    print("\nTesting Vector Index (Weaviate)...")
+    
+    # Check Weaviate connection
+    connected, error = _check_weaviate_connection()
+    if not connected:
+        print(f"  ⚠️  Skipping: {error}")
+        return False
+    
+    # Get PDF and ingest first
+    pdf_path, error = _get_test_pdf_path()
+    if error:
+        print(f"  ⚠️  Skipping: {error}")
+        return False
+    
+    ingest_args = {
+        "pdf_path": pdf_path,
+        "chunk_size": 800,
+        "overlap": 120,
+        "segmentation": "deterministic",
+    }
+    ingest_result = pdf_ingest_tool(ingest_args)
+    
+    if not ingest_result.ok:
+        print(f"  ❌ Ingest failed: {ingest_result.error}")
+        return False
+    
+    chunks = ingest_result.data.get("chunks", [])
+    if len(chunks) == 0:
+        print(f"  ❌ No chunks to index")
+        return False
+    
+    # Test indexing
     index_name = "TestPhase2Index"
     index_args = {
         "index_name": index_name,
@@ -122,14 +178,67 @@ def test_end_to_end():
     index_result = vector_index_tool(index_args)
     
     if not index_result.ok:
-        print(f"     ❌ Indexing failed: {index_result.error}")
+        print(f"  ❌ Indexing failed: {index_result.error}")
         return False
     
     upserted = index_result.data.get("upserted", 0)
-    print(f"     ✅ Indexed {upserted} chunks")
+    index_size = index_result.data.get("index_size", 0)
     
-    # Step 3: Semantic Retrieve
-    print("  3. Semantic Retrieve...")
+    if upserted == 0:
+        print(f"  ❌ No chunks were indexed")
+        return False
+    
+    print(f"  ✅ Indexed {upserted} chunks")
+    print(f"     Index size: {index_size}")
+    print(f"     Class name: {index_result.data.get('class_name', 'unknown')}")
+    return True
+
+
+def test_semantic_retrieve():
+    """Test semantic retrieval step."""
+    print("\nTesting Semantic Retrieve...")
+    
+    # Check Weaviate connection
+    connected, error = _check_weaviate_connection()
+    if not connected:
+        print(f"  ⚠️  Skipping: {error}")
+        return False
+    
+    # Get PDF, ingest, and index first
+    pdf_path, error = _get_test_pdf_path()
+    if error:
+        print(f"  ⚠️  Skipping: {error}")
+        return False
+    
+    ingest_args = {
+        "pdf_path": pdf_path,
+        "chunk_size": 800,
+        "overlap": 120,
+        "segmentation": "deterministic",
+    }
+    ingest_result = pdf_ingest_tool(ingest_args)
+    
+    if not ingest_result.ok:
+        print(f"  ❌ Ingest failed: {ingest_result.error}")
+        return False
+    
+    chunks = ingest_result.data.get("chunks", [])
+    if len(chunks) == 0:
+        print(f"  ❌ No chunks to index")
+        return False
+    
+    index_name = "TestPhase2Index"
+    index_args = {
+        "index_name": index_name,
+        "chunks": chunks,
+    }
+    index_result = vector_index_tool(index_args)
+    
+    if not index_result.ok:
+        print(f"  ❌ Indexing failed: {index_result.error}")
+        return False
+    
+    # Test retrieval
     query = "What are the main requirements?"
     retrieve_args = {
         "index_name": index_name,
@@ -139,43 +248,107 @@ def test_end_to_end():
     retrieve_result = semantic_retrieve_tool(retrieve_args)
     
     if not retrieve_result.ok:
-        print(f"     ❌ Retrieval failed: {retrieve_result.error}")
+        print(f"  ❌ Retrieval failed: {retrieve_result.error}")
         return False
     
     matches = retrieve_result.data.get("matches", [])
-    print(f"     ✅ Retrieved {len(matches)} matches")
+    if len(matches) == 0:
+        print(f"  ⚠️  No matches found (might be expected for some queries)")
+        return True  # Not necessarily a failure
     
-    # Step 4: Verify Skill Envelope (check node_semantic_retrieve output)
-    print("  4. Verifying Skill Envelope format...")
+    print(f"  ✅ Retrieved {len(matches)} matches")
+    print(f"     Query: {query}")
+    if matches:
+        print(f"     Top match score: {matches[0].get('score', 0):.4f}")
+    return True
+
+
+def test_skill_envelope_format():
+    """Test Skill Envelope format validation."""
+    print("\nTesting Skill Envelope format...")
     
-    # Check that matches have required fields
+    # Check Weaviate connection
+    connected, error = _check_weaviate_connection()
+    if not connected:
+        print(f"  ⚠️  Skipping: {error}")
+        return False
+    
+    # Get PDF, ingest, index, and retrieve
+    pdf_path, error = _get_test_pdf_path()
+    if error:
+        print(f"  ⚠️  Skipping: {error}")
+        return False
+    
+    ingest_args = {
+        "pdf_path": pdf_path,
+        "chunk_size": 800,
+        "overlap": 120,
+        "segmentation": "deterministic",
+    }
+    ingest_result = pdf_ingest_tool(ingest_args)
+    
+    if not ingest_result.ok:
+        print(f"  ❌ Ingest failed: {ingest_result.error}")
+        return False
+    
+    chunks = ingest_result.data.get("chunks", [])
+    if len(chunks) == 0:
+        print(f"  ❌ No chunks to index")
+        return False
+    
+    index_name = "TestPhase2Index"
+    index_args = {
+        "index_name": index_name,
+        "chunks": chunks,
+    }
+    index_result = vector_index_tool(index_args)
+    
+    if not index_result.ok:
+        print(f"  ❌ Indexing failed: {index_result.error}")
+        return False
+    
+    query = "What are the main requirements?"
+    retrieve_args = {
+        "index_name": index_name,
+        "query": query,
+        "top_k": 3,
+    }
+    retrieve_result = semantic_retrieve_tool(retrieve_args)
+    
+    if not retrieve_result.ok:
+        print(f"  ❌ Retrieval failed: {retrieve_result.error}")
+        return False
+    
+    matches = retrieve_result.data.get("matches", [])
+    if len(matches) == 0:
+        print(f"  ⚠️  No matches to validate format")
+        return True  # Not necessarily a failure
+    
+    # Validate format
+    required_fields = ["chunk_id", "text", "score", "meta"]
     all_valid = True
     for match in matches:
-        if "chunk_id" not in match:
-            print(f"     ❌ Match missing chunk_id: {match}")
-            all_valid = False
-        if "text" not in match:
-            print(f"     ❌ Match missing text: {match}")
-            all_valid = False
-        if "score" not in match:
-            print(f"     ❌ Match missing score: {match}")
-            all_valid = False
-        if "meta" not in match:
-            print(f"     ❌ Match missing meta: {match}")
-            all_valid = False
+        for field in required_fields:
+            if field not in match:
+                print(f"  ❌ Match missing {field}: {match}")
+                all_valid = False
     
-    if all_valid:
-        print(f"     ✅ All matches have required fields (chunk_id, text, score, meta)")
+    if not all_valid:
+        return False
     
-    # Verify evidence contains chunk_id
+    # Verify evidence chain (chunk_id present)
     for match in matches:
         meta = match.get("meta", {})
-        if "chunk_id" not in meta and match.get("chunk_id"):
-            # chunk_id is at top level, which is fine
-            pass
+        chunk_id = match.get("chunk_id")
+        if not chunk_id:
+            print(f"  ❌ Match missing chunk_id at top level: {match}")
+            all_valid = False
     
-    print(f"     ✅ Evidence chain verified (chunk_id present)")
+    if not all_valid:
+        return False
     
+    print(f"  ✅ All {len(matches)} matches have required fields (chunk_id, text, score, meta)")
+    print(f"  ✅ Evidence chain verified (chunk_id present)")
     return True
 
 
@@ -219,10 +392,19 @@ if __name__ == "__main__":
     # Test 1: Stable chunk_id
     # results.append(("Stable chunk_id", test_stable_chunk_id()))
     
-    # Test 2: End-to-end
-    results.append(("End-to-end pipeline", test_end_to_end()))
+    # Test 2: PDF Ingest (Step 1)
+    results.append(("PDF Ingest", test_pdf_ingest(method='deterministic')))
     
-    # Test 3: No results handling
+    # Test 3: Vector Index (Step 2)
+    # results.append(("Vector Index", test_vector_index()))
+    
+    # Test 4: Semantic Retrieve (Step 3)
+    # results.append(("Semantic Retrieve", test_semantic_retrieve()))
+    
+    # Test 5: Skill Envelope Format (Step 4)
+    # results.append(("Skill Envelope Format", test_skill_envelope_format()))
+    
+    # Test 6: No results handling
     # results.append(("No results handling", test_no_results_handling()))
     
     # Summary

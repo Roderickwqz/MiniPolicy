@@ -737,6 +737,7 @@ def _should_use_semantic(
 # ----------------------------
 # Tool entry
 # ----------------------------
+
 def pdf_ingest_tool(args: Dict[str, Any]) -> ToolResult:
     """
     args:
@@ -765,31 +766,37 @@ def pdf_ingest_tool(args: Dict[str, Any]) -> ToolResult:
       - chunks: [{chunk_id, text, meta}]
       - plus observability fields: warnings, extraction_method, semantic_available, semantic_disabled_reason
     """
-    # ---- validate ----
-    if "pdf_path" not in args:
+    tool_name = "pdf_ingest_tool"
+    warnings: List[Dict[str, Any]] = []
+    timing_ms: Dict[str, int] = {}
+
+    def _fail(code: str, message: str, details: Optional[Dict[str, Any]] = None) -> ToolResult:
         return ToolResult(
             ok=False,
-            tool_name="pdf_ingest_tool",
-            error=ToolError(code="VALIDATION_ERROR", message="Missing required arg 'pdf_path'"),
+            tool_name=tool_name,
+            args=normalized_args,
+            error=ToolError(code=code, message=message, details=details),
+            meta={
+                "warnings": warnings,
+                "timing_ms": timing_ms,
+                "tool_version": "2025-12-22",
+                "extraction_method": (extract_info or {}).get("extraction_method") if "extract_info" in locals() else None,
+            },
         )
+
+    # ---- validate ----
+    if "pdf_path" not in args:
+        return _fail("IO_ERROR", "Failed to read PDF", {"pdf_path": pdf_path, "error": repr(e)})
+
 
     pdf_path = str(args["pdf_path"])
     chunk_size = max(64, int(args.get("chunk_size") or _DEFAULT_CHUNK_SIZE))
     overlap = max(0, int(args.get("overlap") or _DEFAULT_OVERLAP))
-
     segmentation = str(args.get("segmentation") or "semantic").lower()
     doc_id = args.get("doc_id")
 
     if segmentation not in {"semantic", "deterministic"}:
-        return ToolResult(
-            ok=False,
-            tool_name="pdf_ingest_tool",
-            error=ToolError(
-                code="VALIDATION_ERROR",
-                message=f"Unsupported segmentation '{segmentation}'",
-                details={"expected": ["semantic", "deterministic"]},
-            ),
-        )
+        return _fail("VALIDATION_ERROR", "method not in semantic/deterministic", {"pdf_path": pdf_path, "error": repr(e)})
 
     # ---- strategy knobs ----
     prefer_deterministic = bool(args.get("prefer_deterministic") or False)
@@ -807,26 +814,34 @@ def pdf_ingest_tool(args: Dict[str, Any]) -> ToolResult:
     footer_lines = int(args.get("footer_lines", 2))
     hf_ratio = float(args.get("header_footer_min_repetition_ratio", 0.35))
 
+    normalized_args = {
+        "pdf_path": pdf_path,
+        "chunk_size": chunk_size,
+        "overlap": overlap,
+        "segmentation": segmentation,
+        "doc_id": doc_id,
+        "prefer_deterministic": prefer_deterministic,
+        "importance": importance,
+        "semantic_max_bytes": semantic_max_bytes,
+        "semantic_max_pages": semantic_max_pages,
+        "clean_text": clean_text_enabled,
+        "merge_hyphenation": merge_hyphenation,
+        "collapse_blank_lines": collapse_blank_lines,
+        "remove_headers_footers": remove_hf,
+        "header_lines": header_lines,
+        "footer_lines": footer_lines,
+        "header_footer_min_repetition_ratio": hf_ratio,
+    }
+
     # ---- read file ----
     try:
         with open(pdf_path, "rb") as f:
             raw = f.read()
     except FileNotFoundError:
-        return ToolResult(
-            ok=False,
-            tool_name="pdf_ingest_tool",
-            error=ToolError(code="NOT_FOUND", message="PDF not found", details={"pdf_path": pdf_path}),
-        )
+        return _fail("FILE_NOT_FOUND", "File not found", {"pdf_path": pdf_path, "error": repr(e)})
     except Exception as e:
-        return ToolResult(
-            ok=False,
-            tool_name="pdf_ingest_tool",
-            error=ToolError(
-                code="IO_ERROR",
-                message="Failed to read PDF",
-                details={"pdf_path": pdf_path, "error": repr(e)},
-            ),
-        )
+        return _fail("IO_ERROR", "Failed to read PDF", {"pdf_path": pdf_path, "error": repr(e)})
+
 
     doc_hash = _sha256_bytes(raw)
     inferred_doc_id = str(doc_id) if doc_id else f"doc::{doc_hash[:12]}"
@@ -837,11 +852,7 @@ def pdf_ingest_tool(args: Dict[str, Any]) -> ToolResult:
     warnings.extend(extract_warnings)
 
     if not documents:
-        return ToolResult(
-            ok=False,
-            tool_name="pdf_ingest_tool",
-            error=ToolError(code="PROCESSING_ERROR", message="Failed to extract text from PDF"),
-        )
+        return _fail("IO_EPROCESSING_ERROR", "not documents", {"pdf_path": pdf_path, "error": repr(e)})
 
     page_count = len(documents)
 
@@ -912,20 +923,26 @@ def pdf_ingest_tool(args: Dict[str, Any]) -> ToolResult:
         )
         chosen = "deterministic"
 
+    meta = {
+        "warnings": warnings,
+        "extraction_method": extract_info.get("extraction_method"),
+        "chosen_segmentation": chosen,
+        "timing_ms": timing_ms,      # 可选
+        "tool_version": "2025-12-22",  # 可选
+        "semantic_available": semantic_info.get("semantic_available"),
+        "semantic_disabled_reason": semantic_info.get("semantic_disabled_reason"),
+        "cleaning": cleaning_info,
+    }
+
     return ToolResult(
         ok=True,
-        tool_name="pdf_ingest_tool",
+        tool_name=tool_name,
         data={
             "doc_id": inferred_doc_id,
             "doc_hash": doc_hash,
-            "chosen_segmentation": chosen,
             "page_count": page_count,
             "chunks": chunks,
-            # P1/P3 observability fields:
-            "warnings": warnings,
-            "extraction_method": extract_info.get("extraction_method"),
-            "cleaning": cleaning_info,
-            "semantic_available": semantic_info.get("semantic_available"),
-            "semantic_disabled_reason": semantic_info.get("semantic_disabled_reason"),
         },
+        args=normalized_args,
+        meta=meta,
     )
