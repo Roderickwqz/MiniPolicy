@@ -1,0 +1,52 @@
+version: "3.8"
+
+services:
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.35.1
+    command:
+    - --host
+    - 0.0.0.0
+    - --port
+    - '8080'
+    - --scheme
+    - http
+    container_name: weaviate
+    restart: unless-stopped
+    ports:
+      - "22006:8080"   # REST
+      - "22007:50051"  # gRPC
+    volumes:
+      - ${WEAVIATE_DATA_PATH}:/var/lib/weaviate
+    environment:
+      # --- Proxy ---
+      HTTP_PROXY: "http://host.docker.internal:12334"
+      HTTPS_PROXY: "http://host.docker.internal:12334"
+      NO_PROXY: "localhost,127.0.0.1,weaviate"
+      extra_hosts:
+        - "host.docker.internal:host-gateway"
+
+      # --- Basic ---
+      QUERY_DEFAULTS_LIMIT: "25"                        # 当查询里没有显式指定 limit 时，默认返回 25 条结果
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"   # 允许不带 API key / token 的请求访问 Weaviate
+      PERSISTENCE_DATA_PATH: "/var/lib/weaviate"        # Weaviate 在容器内存储数据的路径
+      DEFAULT_VECTORIZER_MODULE: "text2vec-openai"      # 创建 class 时，不自动帮你选 vectorizer
+      CLUSTER_HOSTNAME: "node1"                         # 当前 Weaviate 节点的名字
+
+      # --- Modules ---
+      ENABLE_API_BASED_MODULES: 'true'
+
+    # healthcheck:
+    #   test: ["CMD", "wget", "-qO-", "http://localhost:8080/v1/.well-known/ready"]
+    #   interval: 10s
+    #   timeout: 5s
+    #   retries: 15
+
+    networks:
+      - shared_net
+
+volumes:
+  weaviate_data:
+
+networks:
+  shared_net:
+    driver: bridge
