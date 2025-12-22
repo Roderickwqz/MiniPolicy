@@ -6,8 +6,6 @@ from typing import Optional
 import weaviate
 from llama_index.vector_stores.weaviate import WeaviateVectorStore
 
-
-
 # Weaviate connection configuration
 WEAVIATE_HOST = os.getenv("WEAVIATE_HOST", "localhost")
 WEAVIATE_PORT = int(os.getenv("WEAVIATE_PORT", "22006"))
@@ -20,14 +18,16 @@ def get_weaviate_client():
     Get a Weaviate client instance.
     Returns None if weaviate is not installed.
     """
-    if weaviate is None:
-        return None
-    
     try:
         # Try v4 API first (newer versions)
-        return weaviate.Client(
-            url=WEAVIATE_URL,
-            auth_client_secret=None,  # No auth (AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: true)
+        # return weaviate.Client(
+        #     url=WEAVIATE_URL,
+        #     auth_client_secret=None,  # No auth (AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: true)
+        # )
+        client = weaviate.connect_to_local(
+            host="localhost",
+            port=8080,      # HTTP/REST
+            grpc_port=50051 # gRPC
         )
     except Exception:
         try:

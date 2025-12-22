@@ -18,12 +18,39 @@ except ImportError:
 
 def semantic_retrieve_tool(args: Dict[str, Any]) -> ToolResult:
     """
-    args:
-      - index_name: str
-      - query: str
-      - top_k: int
-    returns:
-      - matches: [{chunk_id, text, score, meta}]
+    Query Weaviate vector database for semantically similar chunks.
+    
+    This tool creates a VectorStoreIndex from the existing Weaviate vector store,
+    then uses a retriever to find top_k most similar chunks to the query.
+    
+    The workflow is:
+    1. Get WeaviateVectorStore (connection to Weaviate)
+    2. Create VectorStoreIndex.from_vector_store() (wrapper for querying)
+    3. Create retriever with index.as_retriever() (retrieval logic)
+    4. Retrieve top_k nodes with retriever.retrieve() (actual query)
+    
+    Note: We use VectorStoreIndex (not SummaryIndex) because:
+    - VectorStoreIndex: For semantic similarity search (our use case)
+    - SummaryIndex: For generating summaries of entire dataset (not needed)
+    
+    Args:
+        index_name: Weaviate class name (must match the one used in vector_index_tool)
+        query: Natural language query string
+        top_k: Number of top results to return (default: 1, minimum: 1)
+    
+    Returns:
+        ToolResult with:
+            - ok: bool
+            - data: {
+                "matches": [{
+                    "chunk_id": str,    # Unique chunk identifier
+                    "text": str,         # Chunk text content
+                    "score": float,      # Similarity score (0.0-1.0)
+                    "meta": dict        # Metadata (doc_id, page, hash, etc.)
+                }],
+                "query": str            # Original query string
+              }
+            - error: ToolError if failed
     """
     index_name = args["index_name"]
     query = args["query"]
@@ -141,6 +168,13 @@ def semantic_retrieve_tool(args: Dict[str, Any]) -> ToolResult:
 
         # Sort by score (descending) - should already be sorted, but ensure
         matches.sort(key=lambda x: x["score"], reverse=True)
+        
+        # Close Weaviate client connection (v4 API requires explicit close)
+        try:
+            if hasattr(client, "close"):
+                client.close()
+        except Exception:
+            pass
 
         return ToolResult(
             ok=True,

@@ -3,24 +3,50 @@ from __future__ import annotations
 
 import json
 from typing import Any, Dict, List
+import weaviate
 
 from app.mcp.contracts import ToolError, ToolResult
 from app.mcp.tools.weaviate_client import get_weaviate_client, get_weaviate_vector_store, ensure_weaviate_class
 
 try:
-    from llama_index.core import Document
-    from llama_index.core.schema import MetadataMode
+    from llama_index.core import Document  # 原始文档的标准载体，用来承载整篇内容 + 元数据
 except ImportError:
     Document = None
 
 
 def vector_index_tool(args: Dict[str, Any]) -> ToolResult:
     """
-    args:
-      - index_name: str
-      - chunks: list
-    returns:
-      - upserted: int
+    Store chunks from PDF ingest into Weaviate vector database.
+    
+    This tool is part of the RAG pipeline:
+    - PDF → pdf_ingest_tool → chunks (in-memory)
+    - chunks → vector_index_tool → Weaviate (vector database with embeddings)
+    - Weaviate → semantic_retrieve_tool → top_k chunks (semantic retrieval)
+    
+    This function directly uses WeaviateVectorStore.add() to upsert documents.
+    It does NOT create a query engine or retriever - those are created in
+    semantic_retrieve_tool when querying is needed.
+    
+    Note: We only use VectorStoreIndex (not SummaryIndex) because:
+    - VectorStoreIndex: For semantic search/retrieval (our use case)
+    - SummaryIndex: For generating summaries of entire dataset (not needed here)
+    
+    Args:
+        index_name: Weaviate class name (will be sanitized for valid class name)
+        chunks: List of chunk dictionaries from pdf_ingest_tool, each containing:
+            - chunk_id: Unique identifier
+            - text: Chunk text content
+            - meta: Metadata dict with doc_id, page, hash, etc.
+    
+    Returns:
+        ToolResult with:
+            - ok: bool
+            - data: {
+                "upserted": int,      # Number of chunks successfully stored
+                "index_size": int,    # Total chunks in the index
+                "class_name": str     # Actual Weaviate class name used
+              }
+            - error: ToolError if failed
     """
     index_name = args["index_name"]
     chunks: List[Dict[str, Any]] = args["chunks"]
@@ -38,7 +64,7 @@ def vector_index_tool(args: Dict[str, Any]) -> ToolResult:
 
     try:
         # Get Weaviate client and vector store
-        client = get_weaviate_client()
+        client: weaviate.Client = get_weaviate_client()
         if client is None:
             return ToolResult(
                 ok=False,
@@ -84,7 +110,7 @@ def vector_index_tool(args: Dict[str, Any]) -> ToolResult:
             if not chunk_id or not text:
                 continue
 
-            meta = chunk.get("meta", {})
+            meta: Dict[str, Any] = chunk.get("meta", {})
             
             # Create Document with metadata
             doc_metadata = {
@@ -111,10 +137,23 @@ def vector_index_tool(args: Dict[str, Any]) -> ToolResult:
 
         # Get index size (count documents in class)
         try:
-            result = client.query.aggregate(class_name).with_meta_count().do()
-            index_size = result.get("data", {}).get("Aggregate", {}).get(class_name, [{}])[0].get("meta", {}).get("count", upserted)
+            # Try v4 API first
+            if hasattr(client, "collections"):
+                collection = client.collections.get(class_name)
+                index_size = collection.aggregate.over_all(total_count=True).total_count
+            else:
+                # Fallback to v3 API
+                result = client.query.aggregate(class_name).with_meta_count().do()
+                index_size = result.get("data", {}).get("Aggregate", {}).get(class_name, [{}])[0].get("meta", {}).get("count", upserted)
         except Exception:
             index_size = upserted
+        finally:
+            # Close Weaviate client connection (v4 API requires explicit close)
+            try:
+                if hasattr(client, "close"):
+                    client.close()
+            except Exception:
+                pass
 
         return ToolResult(
             ok=True,

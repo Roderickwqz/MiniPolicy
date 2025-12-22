@@ -7,23 +7,13 @@ import io
 import os
 import re
 from dataclasses import dataclass
-
 from app.mcp.contracts import ToolError, ToolResult
-from llama_index.readers.file import PyPDFReader
+from llama_index.core import SimpleDirectoryReader
+from llama_index.readers.file import PyMuPDFReader
 from llama_index.core.node_parser import SentenceSplitter, TokenTextSplitter
-LLAMAINDEX_AVAILABLE = True
+from llama_index.core import Document
+import tempfile
 from pypdf import PdfReader  # type: ignore
-# except ImportError:
-#     PyPDFReader = None
-#     SentenceSplitter = None
-#     TokenTextSplitter = None
-#     LLAMAINDEX_AVAILABLE = False
-
-# Fallback to pypdf if LlamaIndex not available
-# try:
-
-# except Exception:  # pragma: no cover - optional dependency
-    # PdfReader = None
 
 
 _DEFAULT_CHUNK_SIZE = 800
@@ -104,54 +94,50 @@ def _extract_pages(raw: bytes, pdf_path: str) -> List[_Page]:
     """
     Extract pages from PDF using LlamaIndex if available, fallback to pypdf.
     """
-    # Try LlamaIndex first
-    if LLAMAINDEX_AVAILABLE and PyPDFReader is not None:
-        try:
-            # Save to temp file for LlamaIndex
-            import tempfile
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                tmp.write(raw)
-                tmp_path = tmp.name
-            
-            try:
-                loader = PyPDFReader()
-                documents = loader.load_data(file=tmp_path)
-                
-                pages: List[_Page] = []
-                current_page = 1
-                for doc in documents:
-                    # Try to extract page number from metadata
-                    page_num = doc.metadata.get("page_label") or doc.metadata.get("page_number")
-                    if page_num:
-                        try:
-                            current_page = int(page_num)
-                        except (ValueError, TypeError):
-                            pass
-                    
-                    text = doc.get_content() or ""
-                    if text.strip():
-                        pages.append(_Page(number=current_page, text=text))
-                        current_page += 1
-                
-                # Clean up temp file
-                try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
-                
-                if pages:
-                    return pages
-            except Exception:
-                # Fallback to pypdf if LlamaIndex fails
-                try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
+
+    # Save to temp file for LlamaIndex SimpleDirectoryReader
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(raw)
+        tmp_path = tmp.name
     
-    # Fallback to pypdf
-    if PdfReader is None:
-        text = raw.decode("utf-8", errors="ignore")
-        return [_Page(number=1, text=text)]
+    try:
+        # Use SimpleDirectoryReader with PyMuPDFReader to load PDF
+        reader = SimpleDirectoryReader(
+            input_files=[tmp_path],
+            file_extractor={".pdf": PyMuPDFReader()}
+        )
+        documents = reader.load_data()
+        
+        pages: List[_Page] = []
+        current_page = 1
+        for doc in documents:
+            # Try to extract page number from metadata
+            page_num = doc.metadata.get("page_label") or doc.metadata.get("page_number")
+            if page_num:
+                try:
+                    current_page = int(page_num)
+                except (ValueError, TypeError):
+                    pass
+            
+            text = doc.get_content() or ""
+            if text.strip():
+                pages.append(_Page(number=current_page, text=text))
+                current_page += 1
+        
+        # Clean up temp file
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+        
+        if pages:
+            return pages
+    except Exception:
+        # Fallback to pypdf if LlamaIndex fails
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
 
     try:
         reader = PdfReader(io.BytesIO(raw))
@@ -186,7 +172,7 @@ def _chunk_page(
         if method == "deterministic":
             # Use custom deterministic chunking (maintains exact same behavior)
             iterator = _chunk_deterministic(page_text, chunk_size, overlap)
-        elif method == "semantic" and LLAMAINDEX_AVAILABLE and SentenceSplitter is not None:
+        elif method == "semantic":
             # Use LlamaIndex SentenceSplitter for semantic chunking
             try:
                 splitter = SentenceSplitter(
@@ -194,7 +180,6 @@ def _chunk_page(
                     chunk_overlap=overlap,
                 )
                 # Create a simple document for splitting
-                from llama_index.core import Document
                 doc = Document(text=page_text, metadata={"page": page.number})
                 nodes = splitter.get_nodes_from_documents([doc])
                 
