@@ -45,17 +45,6 @@ services:
       timeout: 5s
       retries: 15
 
-#     networks:
-#       - shared_net
-
-# volumes:
-#   weaviate_data:
-
-# networks:
-#   shared_net:
-#     driver: bridge
-
-
 
 # docker compose down
 # sudo rm -rf /srv/docker-data/weaviate

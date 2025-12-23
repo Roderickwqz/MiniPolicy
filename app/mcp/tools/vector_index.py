@@ -17,7 +17,7 @@ from app.mcp.contracts import ToolError, ToolResult
 from app.mcp.tools.weaviate_client import get_weaviate_client, ensure_weaviate_collection
 
 
-def _normalize_collection_name(name: str) -> str:
+def normalize_collection_name(name: str) -> str:
     parts = re.split(r"[^0-9a-zA-Z]+", (name or "").strip())
     parts = [p for p in parts if p]
     if not parts:
@@ -50,7 +50,7 @@ def vector_index_tool(args: Dict[str, Any]) -> ToolResult:
         return ToolResult(False, tool_name, args_norm, error=ToolError("VALIDATION_ERROR", "chunks must be a list"))
 
     try:
-        class_name = _normalize_collection_name(index_name)
+        class_name = normalize_collection_name(index_name)
     except Exception as e:
         return ToolResult(False, tool_name, args_norm, error=ToolError("VALIDATION_ERROR", "invalid index_name", details={"error": str(e)}))
 
