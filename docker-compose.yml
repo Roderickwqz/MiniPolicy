@@ -1,52 +1,63 @@
-version: "3.8"
-
 services:
   weaviate:
     image: cr.weaviate.io/semitechnologies/weaviate:1.35.1
-    command:
-    - --host
-    - 0.0.0.0
-    - --port
-    - '8080'
-    - --scheme
-    - http
     container_name: weaviate
     restart: unless-stopped
-    ports:
-      - "22006:8080"   # REST
-      - "22007:50051"  # gRPC
+
+    network_mode: "host"
+
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "22006"
+      - --scheme
+      - http
+      # gRPC 端口由 weaviate 配置/默认决定, 为 50051，
+
     volumes:
       - ${WEAVIATE_DATA_PATH}:/var/lib/weaviate
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+
     environment:
-      # # --- Proxy, NOT needed, because Docker daemon's systemd has already set the proxy---
-      # HTTP_PROXY: "http://host.docker.internal:12334"
-      # HTTPS_PROXY: "http://host.docker.internal:12334"
-      # NO_PROXY: "localhost,127.0.0.1,weaviate"
+      QUERY_DEFAULTS_LIMIT: "25"
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+      PERSISTENCE_DATA_PATH: "/var/lib/weaviate"
 
-      # --- Basic ---
-      QUERY_DEFAULTS_LIMIT: "25"                        # 当查询里没有显式指定 limit 时，默认返回 25 条结果
-      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"   # 允许不带 API key / token 的请求访问 Weaviate
-      PERSISTENCE_DATA_PATH: "/var/lib/weaviate"        # Weaviate 在容器内存储数据的路径
-      DEFAULT_VECTORIZER_MODULE: "text2vec-openai"      # 创建 class 时，不自动帮你选 vectorizer
-      # CLUSTER_HOSTNAME: "node1"                         # 当前 Weaviate 节点的名字
+      # --- 关键集群配置 ---
+      CLUSTER_HOSTNAME: "node1"                # 给节点起个固定名字
+      CLUSTER_NODES: "node1"                   # 告诉它集群里只有它自己，直接引导
+      # --- 端口偏移配置（关键！） ---
+      CLUSTER_GOSSIP_BIND_PORT: "22007"   # 原 7946 (节点发现)
+      CLUSTER_PORT: "22008"               # 原 7947 (集群元数据 API)
+      CLUSTER_DATA_BIND_PORT: "22009"     # 原 8300 (Raft 数据传输)
 
-      # --- Modules ---
-      ENABLE_API_BASED_MODULES: 'true'
+      # DEFAULT_VECTORIZER_MODULE: "text2vec-openai"
+      # ENABLE_API_BASED_MODULES: "true"
+      # OPENAI_APIKEY: "${OPENAI_API_KEY}"
+      # OPENAI_BASEURL: "https://api.openai.com"
+      # HTTP_PROXY: "http://127.0.0.1:12334"
+      # HTTPS_PROXY: "http://127.0.0.1:12334"
+      # NO_PROXY: "localhost,127.0.0.1"
 
-    # healthcheck:
-    #   test: ["CMD", "wget", "-qO-", "http://localhost:8080/v1/.well-known/ready"]
-    #   interval: 10s
-    #   timeout: 5s
-    #   retries: 15
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:22006/v1/.well-known/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
 
-    networks:
-      - shared_net
+#     networks:
+#       - shared_net
 
-volumes:
-  weaviate_data:
+# volumes:
+#   weaviate_data:
 
-networks:
-  shared_net:
-    driver: bridge
+# networks:
+#   shared_net:
+#     driver: bridge
+
+
+
+# docker compose down
+# sudo rm -rf /srv/docker-data/weaviate
+# mkdir /srv/docker-data/weaviate
+# sudo chmod +777 /srv/docker-data/weaviate

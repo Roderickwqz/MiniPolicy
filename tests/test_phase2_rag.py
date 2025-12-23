@@ -16,7 +16,9 @@ sys.path.insert(0, str(project_root))
 from app.mcp.tools.pdf_ingest import pdf_ingest_tool
 from app.mcp.tools.vector_index import vector_index_tool
 from app.mcp.tools.semantic_retrieve import semantic_retrieve_tool
+from app.mcp.tools.weaviate_client import get_weaviate_client
 dotenv.load_dotenv()
+
 
 def test_stable_chunk_id():
     """Test that same PDF re-run produces identical chunk_ids."""
@@ -73,15 +75,19 @@ def test_stable_chunk_id():
 
 
 def _check_weaviate_connection():
-    """Helper: Check if Weaviate is available."""
+    client = None
     try:
-        from app.mcp.tools.weaviate_client import get_weaviate_client
         client = get_weaviate_client()
-        if client is None:
-            return False, "Weaviate client not available. Make sure Weaviate is running (docker-compose up)"
+        meta = client.get_meta() if hasattr(client, "get_meta") else client.misc.meta.get()
         return True, None
     except Exception as e:
-        return False, f"Cannot connect to Weaviate: {e}"
+        return False, str(e)
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
 
 
 def _get_test_pdf_path():
@@ -92,7 +98,7 @@ def _get_test_pdf_path():
     return pdf_path, None
 
 
-def test_pdf_ingest(method='deterministic'):
+def test_pdf_ingest(method="deterministic"):
     """Test PDF ingestion step."""
     print("\nTesting PDF Ingest...")
     
@@ -136,61 +142,121 @@ def test_pdf_ingest(method='deterministic'):
     return True
 
 
-def test_vector_index():
-    """Test vector indexing step."""
-    print("\nTesting Vector Index (Weaviate)...")
-    
+def test_vector_index(method="deterministic") -> bool:
+    """Test vector indexing step (Weaviate v4 + ToolResult args/meta)."""
+    print("\nTesting Vector Index (Weaviate v4)...")
+
     # Check Weaviate connection
-    connected, error = _check_weaviate_connection()
-    if not connected:
-        print(f"  ⚠️  Skipping: {error}")
-        return False
-    
+    # connected, error = _check_weaviate_connection()
+    # if not connected:
+    #     print(f"  ⚠️  Skipping: {error}")
+    #     return False
+
     # Get PDF and ingest first
     pdf_path, error = _get_test_pdf_path()
     if error:
         print(f"  ⚠️  Skipping: {error}")
         return False
-    
+
     ingest_args = {
         "pdf_path": pdf_path,
         "chunk_size": 800,
         "overlap": 120,
-        "segmentation": "deterministic",
+        "segmentation": method,
     }
     ingest_result = pdf_ingest_tool(ingest_args)
-    
+
     if not ingest_result.ok:
-        print(f"  ❌ Ingest failed: {ingest_result.error}")
+        # ToolError is dataclass; print nicely
+        err = ingest_result.error.to_dict() if ingest_result.error else None
+        print(f"  ❌ Ingest failed: {err}")
         return False
-    
-    chunks = ingest_result.data.get("chunks", [])
-    if len(chunks) == 0:
-        print(f"  ❌ No chunks to index")
+
+    chunks = (ingest_result.data or {}).get("chunks", [])
+    if not chunks:
+        print("  ❌ No chunks to index")
         return False
-    
+
     # Test indexing
     index_name = "TestPhase2Index"
+
     index_args = {
         "index_name": index_name,
         "chunks": chunks,
+        "batch_size": 16,              # 先用 16；如果还超时就降到 8
+        "inter_batch_sleep_ms": 50,     # 若服务端压力大可设 50
     }
     index_result = vector_index_tool(index_args)
-    
+
     if not index_result.ok:
-        print(f"  ❌ Indexing failed: {index_result.error}")
+        err = index_result.error.to_dict() if index_result.error else None
+        meta = index_result.meta or {}
+        print(f"  ❌ Indexing failed: {err}")
+        if meta:
+            print(f"     meta: {meta}")
         return False
-    
-    upserted = index_result.data.get("upserted", 0)
-    index_size = index_result.data.get("index_size", 0)
-    
-    if upserted == 0:
-        print(f"  ❌ No chunks were indexed")
+
+    data = index_result.data or {}
+    meta = index_result.meta or {}
+    args_norm = index_result.args or {}
+
+    upserted = int(data.get("upserted", 0) or 0)
+    index_size = int(data.get("index_size", 0) or 0)
+    class_name = data.get("class_name", "unknown")
+
+    # Basic assertions
+    if upserted <= 0:
+        print("  ❌ No chunks were indexed")
+        print(f"     data: {data}")
+        print(f"     meta: {meta}")
         return False
-    
+
+    # New-contract validations (recommended)
+    # 1) args normalization should exist and match high-level expectations
+    if args_norm.get("index_name") != index_name:
+        print("  ❌ ToolResult.args mismatch: index_name")
+        print(f"     expected: {index_name}")
+        print(f"     got: {args_norm.get('index_name')}")
+        return False
+    if args_norm.get("chunk_count") != len(chunks):
+        print("  ❌ ToolResult.args mismatch: chunk_count")
+        print(f"     expected: {len(chunks)}")
+        print(f"     got: {args_norm.get('chunk_count')}")
+        return False
+
+    # 2) meta should include observability fields
+    received = int(meta.get("received", 0) or 0)
+    valid = int(meta.get("valid", 0) or 0)
+    skipped = int(meta.get("skipped", 0) or 0)
+    elapsed_ms = int(meta.get("elapsed_ms", 0) or 0)
+
+    if received != len(chunks):
+        print("  ❌ meta.received mismatch")
+        print(f"     expected: {len(chunks)}")
+        print(f"     got: {received}")
+        return False
+
+    # It is OK for valid < received if some chunks are missing chunk_id or empty text.
+    if upserted != valid:
+        print("  ❌ upserted != meta.valid (unexpected)")
+        print(f"     upserted: {upserted}")
+        print(f"     valid: {valid}")
+        print(f"     skipped: {skipped}")
+        print(f"     skipped_reasons: {meta.get('skipped_reasons')}")
+        return False
+
+    # Optional: ensure vectorization config is surfaced
+    vectorizer = meta.get("vectorizer")
+    embedding_model = meta.get("embedding_model")
+
     print(f"  ✅ Indexed {upserted} chunks")
     print(f"     Index size: {index_size}")
-    print(f"     Class name: {index_result.data.get('class_name', 'unknown')}")
+    print(f"     Class/Collection: {class_name}")
+    print(f"     args: {args_norm}")
+    print(f"     meta: received={received}, valid={valid}, skipped={skipped}, elapsed_ms={elapsed_ms}")
+    if vectorizer or embedding_model:
+        print(f"     vectorizer={vectorizer}, embedding_model={embedding_model}")
+
     return True
 
 
@@ -199,10 +265,10 @@ def test_semantic_retrieve():
     print("\nTesting Semantic Retrieve...")
     
     # Check Weaviate connection
-    connected, error = _check_weaviate_connection()
-    if not connected:
-        print(f"  ⚠️  Skipping: {error}")
-        return False
+    # connected, error = _check_weaviate_connection()
+    # if not connected:
+    #     print(f"  ⚠️  Skipping: {error}")
+    #     return False
     
     # Get PDF, ingest, and index first
     pdf_path, error = _get_test_pdf_path()
@@ -268,10 +334,10 @@ def test_skill_envelope_format():
     print("\nTesting Skill Envelope format...")
     
     # Check Weaviate connection
-    connected, error = _check_weaviate_connection()
-    if not connected:
-        print(f"  ⚠️  Skipping: {error}")
-        return False
+    # connected, error = _check_weaviate_connection()
+    # if not connected:
+    #     print(f"  ⚠️  Skipping: {error}")
+    #     return False
     
     # Get PDF, ingest, index, and retrieve
     pdf_path, error = _get_test_pdf_path()
@@ -393,13 +459,13 @@ if __name__ == "__main__":
     # results.append(("Stable chunk_id", test_stable_chunk_id()))
     
     # Test 2: PDF Ingest (Step 1)
-    results.append(("PDF Ingest", test_pdf_ingest(method='semantic')))
+    # results.append(("PDF Ingest", test_pdf_ingest(method='semantic')))
     
     # Test 3: Vector Index (Step 2)
-    # results.append(("Vector Index", test_vector_index()))
+    # results.append(("Vector Index", test_vector_index(method="deterministic")))
     
     # Test 4: Semantic Retrieve (Step 3)
-    # results.append(("Semantic Retrieve", test_semantic_retrieve()))
+    results.append(("Semantic Retrieve", test_semantic_retrieve()))
     
     # Test 5: Skill Envelope Format (Step 4)
     # results.append(("Skill Envelope Format", test_skill_envelope_format()))

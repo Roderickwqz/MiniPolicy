@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 
 from app.mcp.contracts import ToolError, ToolResult
 from app.mcp.tools.weaviate_client import get_weaviate_client, get_weaviate_vector_store
-from app.mcp.tools.vector_index import normalize_class_name
+# from app.mcp.tools.vector_index import normalize_class_name
 
 try:
     from llama_index.core import VectorStoreIndex, QueryBundle
@@ -73,7 +73,7 @@ def semantic_retrieve_tool(args: Dict[str, Any]) -> ToolResult:
     try:
         # Normalize class name to meet Weaviate requirements (must start with capital letter)
         # Use the same normalization function as vector_index_tool to ensure consistency
-        class_name = normalize_class_name(index_name)
+        # class_name = normalize_class_name(index_name)
         
         # Get Weaviate client and check if class exists
         client = get_weaviate_client()

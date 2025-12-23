@@ -356,7 +356,7 @@ def _get_embed_model_with_reason() -> Tuple[Optional[Any], Optional[str]]:
         if _embed_model is not None:
             return _embed_model, None
         try:
-            _embed_model = OpenAIEmbedding()
+            _embed_model = OpenAIEmbedding("text-embedding-3-small")
             return _embed_model, None
         except Exception as e:
             return None, f"openai_embedding_init_failed:{repr(e)}"
@@ -795,14 +795,14 @@ def pdf_ingest_tool(args: Dict[str, Any]) -> ToolResult:
     pdf_path = str(args["pdf_path"])
     chunk_size = max(64, int(args.get("chunk_size") or _DEFAULT_CHUNK_SIZE))
     overlap = max(0, int(args.get("overlap") or _DEFAULT_OVERLAP))
-    segmentation = str(args.get("segmentation") or "semantic").lower()
+    segmentation = str(args.get("segmentation") or "deterministic").lower()
     doc_id = args.get("doc_id")
 
     if segmentation not in {"semantic", "deterministic"}:
         return _fail("VALIDATION_ERROR", "method not in semantic/deterministic", {"pdf_path": pdf_path, "error": repr(e)})
 
     # ---- strategy knobs ----
-    prefer_deterministic = bool(args.get("prefer_deterministic") or False)
+    prefer_deterministic = bool(args.get("prefer_deterministic") or True)
     importance = str(args.get("importance") or "normal")
     semantic_max_bytes = int(args.get("semantic_max_bytes") or 2_000_000)
     semantic_max_pages = int(args.get("semantic_max_pages") or 200)

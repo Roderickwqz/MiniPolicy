@@ -12,6 +12,7 @@ This module provides:
 import os
 from typing import Optional, Dict, Any
 from pathlib import Path
+from contextlib import contextmanager
 
 try:
     from dotenv import load_dotenv
@@ -19,6 +20,25 @@ try:
 except ImportError:
     _DOTENV_AVAILABLE = False
     load_dotenv = None  # type: ignore[assignment]
+
+
+@contextmanager
+def without_proxy_env():
+    keys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]
+    backup = {k: os.environ.get(k) for k in keys}
+    try:
+        for k in keys:
+            os.environ.pop(k, None)
+        # 确保本地直连
+        os.environ["NO_PROXY"] = os.environ.get("NO_PROXY", "") + ",localhost,127.0.0.1,::1"
+        os.environ["no_proxy"] = os.environ["NO_PROXY"]
+        yield
+    finally:
+        for k, v in backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 class MCPConfig:
@@ -53,9 +73,10 @@ class MCPConfig:
         """Validate that required API keys are available."""
         required_keys = [
             "OPENAI_API_KEY",
-            # "WEAVIATE_HOST", 
-            # "WEAVIATE_PORT",
-            # "WEAVIATE_SCHEME"
+            "WEAVIATE_HOST", 
+            "WEAVIATE_PORT",
+            "WEAVIATE_GRPC_PORT",
+            "WEAVIATE_SCHEME"
         ]
         
         missing_keys = []
@@ -161,6 +182,11 @@ class MCPConfig:
         return self.get_int("WEAVIATE_PORT", 22006)
     
     @property
+    def weaviate_grpc_port(self) -> int:
+        """Weaviate port."""
+        return self.get_int("WEAVIATE_GRPC_PORT", 50051)
+
+    @property
     def weaviate_scheme(self) -> str:
         """Weaviate scheme (http/https)."""
         return self.get("WEAVIATE_SCHEME", "http")
@@ -197,6 +223,7 @@ class MCPConfig:
         return {
             "host": self.weaviate_host,
             "port": self.weaviate_port,
+            'grpc_port': self.weaviate_grpc_port,
             "scheme": self.weaviate_scheme,
             "url": self.weaviate_url,
         }
