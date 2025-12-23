@@ -70,3 +70,76 @@ def append_audit_log(run_dir: str, line: str) -> None:
     with _LOCK:
         with open(path, "a", encoding="utf-8") as f:
             f.write(line.rstrip() + "\n")
+
+
+def append_graph_path(
+    run_dir: str,
+    graph_path_id: str,
+    query: str,
+    nodes: list,
+    edges: list,
+) -> None:
+    """
+    Append a graph path snapshot to artifacts.json.
+    
+    Args:
+        run_dir: Run directory path
+        graph_path_id: Unique identifier for this graph path
+        query: The Cypher query that generated this path
+        nodes: List of node dicts with id, labels, properties
+        edges: List of edge dicts with id, type, start_node, end_node, properties
+    """
+    ensure_run_dir(run_dir)
+    path = os.path.join(run_dir, "artifacts.json")
+    
+    record = {
+        "type": "graph_path",
+        "graph_path_id": graph_path_id,
+        "query": query,
+        "nodes": nodes,
+        "edges": edges,
+    }
+    
+    with _LOCK:
+        if not os.path.exists(path):
+            payload = {"created_at": _utc_now_iso(), "records": []}
+        else:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        
+        record = {
+            "ts": _utc_now_iso(),
+            **record,
+        }
+        payload["records"].append(record)
+        
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def get_graph_path(run_dir: str, graph_path_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve a graph path snapshot from artifacts.json by graph_path_id.
+    
+    Args:
+        run_dir: Run directory path
+        graph_path_id: Graph path identifier to retrieve
+    
+    Returns:
+        Graph path record dict or None if not found
+    """
+    path = os.path.join(run_dir, "artifacts.json")
+    
+    if not os.path.exists(path):
+        return None
+    
+    with _LOCK:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        
+        records = payload.get("records", [])
+        for record in records:
+            if record.get("type") == "graph_path" and record.get("graph_path_id") == graph_path_id:
+                return record
+    
+    return None

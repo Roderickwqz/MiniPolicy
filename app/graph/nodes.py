@@ -388,10 +388,117 @@ def node_semantic_retrieve(state: RunState) -> RunState:
 
 
 def node_graph_build(state: RunState) -> RunState:
+    """
+    Build graph in Neo4j from chunks.
+    Creates Doc and Chunk nodes with HAS_CHUNK relationships.
+    """
     run_id = state["run_id"]
     graph_path_id = "Input>IngestDocs>VectorIndex>SemanticRetrieve>GraphBuild"
-    state["graph_build"] = {"type": "placeholder", "nodes": ["ParallelSkills", "Debate", "Verify"]}
-
+    gw = MCPGateway()
+    
+    chunks = state.get("chunks") or {}
+    ingest_summary = state.get("ingest_summary") or {}
+    
+    # Extract doc_id from first chunk or ingest_summary
+    doc_id = None
+    doc_hash = None
+    source_path = None
+    page_count = 0
+    
+    if chunks:
+        first_chunk = list(chunks.values())[0]
+        meta = first_chunk.get("meta", {})
+        doc_id = meta.get("doc_id") or ingest_summary.get("doc_id")
+        doc_hash = meta.get("doc_hash") or ingest_summary.get("doc_hash")
+        source_path = meta.get("source_path")
+        # Count unique pages
+        pages = set()
+        for chunk in chunks.values():
+            chunk_meta = chunk.get("meta", {})
+            page_num = chunk_meta.get("page_num")
+            if page_num:
+                pages.add(page_num)
+        page_count = len(pages)
+    
+    if not doc_id:
+        doc_id = f"doc::{run_id}"
+    
+    # Prepare nodes and edges for graph_upsert_tool
+    nodes: List[Dict[str, Any]] = []
+    edges: List[Dict[str, Any]] = []
+    
+    # Create Doc node
+    nodes.append({
+        "type": "Doc",
+        "id": doc_id,
+        "properties": {
+            "doc_id": doc_id,
+            "doc_hash": doc_hash or "",
+            "source_path": source_path or "",
+            "page_count": page_count,
+        },
+    })
+    
+    # Create Chunk nodes and HAS_CHUNK edges
+    for chunk_id, chunk_data in chunks.items():
+        meta = chunk_data.get("meta", {})
+        text = chunk_data.get("text", "")
+        
+        # Create Chunk node
+        nodes.append({
+            "type": "Chunk",
+            "id": chunk_id,
+            "properties": {
+                "chunk_id": chunk_id,
+                "content_id": meta.get("content_id") or meta.get("hash", ""),
+                "text": text,
+                "doc_id": doc_id,
+                "page_num": meta.get("page_num", 0),
+                "page_index": meta.get("page_index", 0),
+                "chunk_index_global": meta.get("chunk_index_global", 0),
+                "chunk_index_in_page": meta.get("chunk_index_in_page", 0),
+                "chunk_method": meta.get("chunk_method", ""),
+                "approx_tokens": meta.get("approx_tokens", 0),
+            },
+        })
+        
+        # Create HAS_CHUNK edge
+        edges.append({
+            "from_type": "Doc",
+            "from_id": doc_id,
+            "to_type": "Chunk",
+            "to_id": chunk_id,
+            "relationship": "HAS_CHUNK",
+            "properties": {
+                "order": meta.get("chunk_index_global", 0),
+            },
+        })
+    
+    # Call graph_upsert_tool
+    req, res = gw.call_tool(
+        run_id=run_id,
+        node_id="GraphBuild",
+        step_id=_step(),
+        graph_path_id=graph_path_id,
+        tool_name="graph.upsert",
+        tool_args={"nodes": nodes, "edges": edges},
+        chunk_ids=list(chunks.keys()),
+    )
+    
+    _append_env(state, [req, res])
+    
+    # Update state with graph build metadata
+    output = res.payload.get("output") or {}
+    data = output.get("data") or {}
+    
+    state["graph_build"] = {
+        "doc_id": doc_id,
+        "nodes_created": data.get("nodes_created", 0),
+        "edges_created": data.get("edges_created", 0),
+        "chunk_count": len(chunks),
+    }
+    
+    # Create envelope for graph build result
     env = Envelope(
         envelope_type="skill.result",
         run_id=run_id,
@@ -399,10 +506,11 @@ def node_graph_build(state: RunState) -> RunState:
         step_id=_step(),
         ts_ms=_now_ms(),
         graph_path_id=graph_path_id,
-        chunk_ids=list((state.get("chunks") or {}).keys()),
+        chunk_ids=list(chunks.keys()),
         payload={"graph_build": state["graph_build"]},
     )
     _append_env(state, [env])
+    
     return state
 
 

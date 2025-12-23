@@ -86,6 +86,12 @@ class MCPConfig:
         
         if missing_keys:
             print(f"Warning: Missing required API keys: {', '.join(missing_keys)}")
+        
+        # Neo4j is optional (external instance)
+        neo4j_keys = ["NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"]
+        missing_neo4j = [k for k in neo4j_keys if not self.get(k)]
+        if missing_neo4j:
+            print(f"Info: Neo4j configuration not found: {', '.join(missing_neo4j)}. GraphRAG features will be disabled.")
     
     def get(self, key: str, default: Optional[str] = None) -> Optional[str]:
         """
@@ -206,6 +212,29 @@ class MCPConfig:
         """Weaviate data path."""
         return self.get("WEAVIATE_DATA_PATH")
     
+    @property
+    def neo4j_uri(self) -> Optional[str]:
+        """Neo4j connection URI."""
+        return self.get("NEO4J_URI")
+    
+    @property
+    def neo4j_username(self) -> Optional[str]:
+        """Neo4j username."""
+        return self.get("NEO4J_USERNAME")
+    
+    @property
+    def neo4j_password(self) -> Optional[str]:
+        """Neo4j password."""
+        return self.get("NEO4J_PASSWORD")
+    
+    def get_neo4j_config(self) -> Dict[str, Any]:
+        """Get Neo4j configuration as a dictionary."""
+        return {
+            "uri": self.neo4j_uri,
+            "username": self.neo4j_username,
+            "password": self.neo4j_password,
+        }
+    
     def get_all_api_keys(self) -> Dict[str, Optional[str]]:
         """Get all API keys as a dictionary."""
         return {
@@ -254,6 +283,11 @@ def get_api_key(key_name: str) -> Optional[str]:
 def get_weaviate_client_config() -> Dict[str, Any]:
     """Get Weaviate client configuration."""
     return _config.get_weaviate_config()
+
+
+def get_neo4j_config() -> Dict[str, Any]:
+    """Get Neo4j configuration."""
+    return _config.get_neo4j_config()
 
 
 # Convenience functions for direct access

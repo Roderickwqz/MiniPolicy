@@ -1,6 +1,7 @@
 # app/mcp/tools/weaviate_client.py
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Optional, Sequence
 
 import weaviate
@@ -10,10 +11,17 @@ from llama_index.vector_stores.weaviate import WeaviateVectorStore
 from app.mcp.config import get_weaviate_client_config
 
 
+# Thread-local storage for connection reuse
+import threading
+_thread_local = threading.local()
+
+
 def get_weaviate_client() -> weaviate.WeaviateClient:
     """
     Get a Weaviate v4 client instance (v4-only).
     Raises exception if connection fails.
+    
+    Note: For connection pooling, prefer using weaviate_connection() context manager.
     """
     config = get_weaviate_client_config()
     print("weaviate_client_config =", config)
@@ -22,6 +30,57 @@ def get_weaviate_client() -> weaviate.WeaviateClient:
         port=config["port"],              # REST
         grpc_port=config["grpc_port"],    
     )
+
+
+@contextmanager
+def weaviate_connection():
+    """
+    Context manager for Weaviate connection pooling.
+    Reuses connection within the same thread context.
+    
+    Usage:
+        with weaviate_connection() as client:
+            # Use client here
+            collection = client.collections.get("MyCollection")
+            # Connection is automatically closed when exiting context
+    """
+    # Check if we already have a connection in this thread
+    if hasattr(_thread_local, 'weaviate_client'):
+        client = _thread_local.weaviate_client
+        try:
+            # Verify connection is still alive
+            client.collections.list_all()
+            yield client
+            return
+        except Exception:
+            # Connection is dead, create a new one
+            try:
+                client.close()
+            except Exception:
+                pass
+            delattr(_thread_local, 'weaviate_client')
+    
+    # Create new connection
+    config = get_weaviate_client_config()
+    client = weaviate.connect_to_local(
+        host=config["host"],
+        port=config["port"],
+        grpc_port=config["grpc_port"],
+    )
+    
+    # Store in thread-local for potential reuse
+    _thread_local.weaviate_client = client
+    
+    try:
+        yield client
+    finally:
+        # Clean up: close connection and remove from thread-local
+        try:
+            client.close()
+        except Exception:
+            pass
+        if hasattr(_thread_local, 'weaviate_client'):
+            delattr(_thread_local, 'weaviate_client')
 
 
 def ensure_weaviate_collection(
