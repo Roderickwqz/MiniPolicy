@@ -465,10 +465,10 @@ if __name__ == "__main__":
     # results.append(("Vector Index", test_vector_index(method="deterministic")))
     
     # Test 4: Semantic Retrieve (Step 3)
-    results.append(("Semantic Retrieve", test_semantic_retrieve()))
+    # results.append(("Semantic Retrieve", test_semantic_retrieve()))
     
     # Test 5: Skill Envelope Format (Step 4)
-    # results.append(("Skill Envelope Format", test_skill_envelope_format()))
+    results.append(("Skill Envelope Format", test_skill_envelope_format()))
     
     # Test 6: No results handling
     # results.append(("No results handling", test_no_results_handling()))
